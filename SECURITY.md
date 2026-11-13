@@ -11,3 +11,39 @@ Include the Delux version (`delux --version`), your OS, and a minimal reproducti
 ## Supported versions
 
 Before the first release, fixes land on `main`. After publication, security fixes target the latest release; older versions do not have a separate maintenance branch.
+
+## Security model
+
+### SSH and credentials
+
+Authentication and host keys stay with OpenSSH. Delux reads SSH configuration rather than importing keys or saving passwords. Background scans and previews use `BatchMode=yes` and `StrictHostKeyChecking=yes`: they cannot prompt or accept unknown host keys. Interactive prompts appear only after you choose to sign in or attach. Verify fingerprints through a trusted channel before accepting them.
+
+Sign-in, scans, previews, and attachments reuse a private, per-process SSH control connection where possible. Delux closes these connections on exit; connections with no active channels expire after 30 seconds. An active sign-in or attached client keeps the connection alive, and background probe timeouts do not reset it.
+
+Port, agent, and X11 forwarding are disabled for every Delux SSH operation, including attachments. Use SSH directly when you need forwarding.
+
+### Commands and terminal output
+
+Delux validates SSH destinations, quotes session identifiers in commands, and checks session identity before attaching. A vanished or replaced session is reported rather than silently substituted. Remote login shells must accept POSIX-style command quoting.
+
+Picker previews use read-only `tmux capture-pane`. Both previews and the embedded terminal render parsed output rather than passing escape sequences directly to your terminal. Remote clipboard, window-title, and window-resize requests are ignored. The full-terminal `delux attach` command passes normal tmux output through to your terminal instead.
+
+## Discovery and local data
+
+### Which computers are contacted
+
+Tailscale discovery includes your Linux and macOS computers and tagged devices. Shared computers and other users' devices are skipped unless configured by Tailscale node ID or full DNS name in `hosts`; a short hostname is not sufficient to authorize them. If Delux itself runs on a tagged device, the owner check is skipped. Tailscale presence does not establish SSH access.
+
+Host mappings are matched by node ID, full DNS name without its trailing dot, short DNS name, then hostname. Configured hosts are probed even when absent from Tailscale discovery. Saving a user with `u` uses the stable discovery key, taking precedence over name-based mappings.
+
+`ignore` excludes matching computers, including configured hosts. Explicit `--host` destinations bypass discovery and `ignore`, but still resolve through configured mappings.
+
+### Stored preferences
+
+Configuration defaults to `~/.config/delux/cli.json`, including on macOS. Pins and recent attachments live in `~/.local/state/delux/state.json`. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override those base directories; `--config PATH` overrides the configuration file. Relative or empty XDG directory values are ignored, and non-UTF-8 directory roots are rejected.
+
+These files contain computer mappings and session preferences, not passwords, private keys, or captured terminal output. Previews stay in memory, and inventories refresh on rescan.
+
+Updates are merged under persistent `.lock` files beside the resolved target files. Do not remove those locks while Delux is running. Existing symlinks are preserved; dangling links are rejected. Each configuration or state file is limited to 64 KiB, and oversized updates are rejected without replacing it.
+
+If saved state cannot be read, Delux reports the error and leaves it untouched; changes to pins remain in memory. Move the unreadable state file aside to start fresh.
