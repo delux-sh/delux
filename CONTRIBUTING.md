@@ -1,0 +1,107 @@
+# Contributing to Delux
+
+Thanks for helping. Delux does one thing: it finds existing tmux sessions across your computers and attaches to one over SSH in the terminal you already use. Changes that keep it small, predictable, and safe are the easiest to accept.
+
+## Before you start
+
+- **Bug fixes and documentation** can go straight to a pull request.
+- **New features or larger refactors:** open an issue first, so we can agree on scope before you spend time on it. Features that need a remote agent, a server, or account sync are out of scope.
+- **Security issues:** don't open a public issue; see [SECURITY.md](SECURITY.md).
+
+## Development
+
+You need Rust 1.88 or newer and tmux 3.2 or newer (`rustup` is recommended for Rust). The SSH authentication regression also needs OpenSSH's client, `ssh-keygen`, and `/usr/sbin/sshd`; it starts a loopback server with temporary keys, not your normal SSH service. CI installs these dependencies on Linux. The full suite runs on macOS and Linux.
+
+```bash
+cargo build
+```
+
+Use the isolated setup below to run the picker or inventory commands during development, rather than pointing `cargo run` at your normal sessions.
+
+CI runs these three checks on Linux and macOS; run them before opening a pull request:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+```
+
+## Never touch real sessions while testing
+
+Delux attaches to and sends keys through tmux, so a test or a manual experiment pointed at your real tmux server can type into a running program. Tests use isolated tmux servers on temporary sockets; keep it that way. For manual testing, start a throwaway server and temporary config and state in a subshell:
+
+```bash
+(
+  set -eu
+  unset TMUX TMUX_PANE
+  sandbox="$(mktemp -d /tmp/delux-test.XXXXXX)"
+  export TMUX_TMPDIR="$sandbox" XDG_STATE_HOME="$sandbox/state"
+  trap 'tmux -L default kill-server 2>/dev/null || true; rm -rf "$sandbox"' EXIT
+  tmux -L default -f /dev/null new-session -d -s demo
+  cargo run -- --local --config "$sandbox/cli.json"
+)
+```
+
+Keep the isolated `TMUX_TMPDIR` and the `unset`: they prevent commands from reaching your normal server. The short `/tmp` path avoids Unix-socket path limits on macOS. `set -e` stops setup if creating the temporary directory fails, and the exit trap stops the throwaway server and removes its files. `-f /dev/null` avoids loading your usual tmux configuration.
+
+Don't drive the picker with automated keystrokes against your own sessions or other people's computers.
+
+## Source-only launch and deferred packaging
+
+The public launch is source-only. There are no published Delux binaries or public Homebrew formula; the Homebrew tap stays private. Do not create a tag or release for the source-only launch. Publishing source does not publish archives or update the tap.
+
+The packaging tooling below is retained for a future, separately approved binary release. `scripts/dist.sh` replaces the generated `dist/` directory and builds all supported targets for the current host. Pass target triples to build a subset. In addition to Rust, packaging needs:
+
+```bash
+cargo install cargo-about --locked --features cli --version 0.9.2
+cargo install cargo-zigbuild --locked --version 0.23.4
+```
+
+Linux builds also need Zig 0.17.0. The Release workflow pins Rust, Zig, and these tools; use those versions when reproducing release archives. `about.toml` defines the accepted dependency licenses, and packaging fails on unresolved licenses. Archives carry project licenses, generated dependency notices, and the Rust toolchain's copyright inventory. `licenses/musl-COPYRIGHT` is copied from Zig 0.17.0's `lib/libc/musl/COPYRIGHT`; review it when changing the Zig version.
+
+Before a future binary release:
+
+- Run CI and manually dispatch Release to inspect its non-publishing artifact.
+- Verify the checksums, extract each supported archive, and test on the advertised platforms. Record runtime gaps in `docs/verification.md`.
+- Test the generated Homebrew formula with the release archives. `scripts/homebrew-formula.sh VERSION SHA256SUMS` requires exactly one valid checksum for each of the four targets.
+- Confirm `security@delux.sh` receives mail, enable private vulnerability reporting when the repository becomes public, and configure branch/tag rules and release-environment approvals.
+- Update installation instructions only when public downloads and the formula are actually available.
+
+Pushing a matching `v<version>` tag to a public repository publishes through the `release` environment. Do not use a tag for a dry run. A future tap update needs `HOMEBREW_TAP_TOKEN`, limited to contents read/write on the private tap repository; without it, the workflow leaves the tap update to a maintainer. Homebrew publication remains deferred.
+
+## Pull requests
+
+- Keep each pull request to one change, with tests for new behavior.
+- Describe what changed, why, and how you verified it. AI-assisted code is welcome when you have reviewed, understood, and tested it.
+- Say which systems you tested on (macOS, Linux, architecture).
+- Allowing maintainers to push small fixes to your branch speeds up review.
+
+## License
+
+Delux is licensed under the [GNU General Public License, version 3 or later](LICENSE) (`GPL-3.0-or-later`). Contributions must be submitted under the same license. Contributors retain copyright ownership of their contributions: there is no copyright assignment or contributor license agreement (CLA), and no special commercial relicensing rights are granted to the maintainer. Preserve third-party copyright and license notices.
+
+## Developer Certificate of Origin
+
+Read the [Developer Certificate of Origin 1.1](DCO) ([original text](https://developercertificate.org/)). By adding a `Signed-off-by` trailer, you certify its terms for that contribution. Every commit in your pull request must include a sign-off matching that commit's author name and email. The DCO check examines only the pull request's commits, not earlier repository history.
+
+Configure the public identity you want recorded, then use lowercase `-s`:
+
+```bash
+git config user.name "Your Name or Username"
+git config user.email "your-public-email@example.com"
+git commit -s
+```
+
+A username and a GitHub-provided `noreply` email are welcome; use the same name and email for the commit author and sign-off. Both are public and retained in Git history. `git commit -s` adds `Signed-off-by: Your Name or Username <your-public-email@example.com>` to the commit message. It is a DCO certification, not cryptographic signing (`git commit -S`).
+
+To sign off your most recent unsigned commit, first confirm that it is your contribution, the author identity matches your configured identity, and your working tree and index are clean:
+
+```bash
+git commit --amend --no-edit -s
+```
+
+For several unsigned commits, use `git rebase -i <base-commit>` on your own PR branch, where `<base-commit>` is the commit immediately before your PR's commits. Mark only your unsigned commits as `edit`; at each stop, run the amend command above and then `git rebase --continue`. Do not certify someone else's contribution or rewrite historical commits outside your PR. If another author has an unsigned commit, ask that author to sign it off.
+
+Amending or rebasing changes commit IDs. If you already pushed, coordinate with anyone using the branch and use `git push --force-with-lease <remote> <your-pr-branch>` only for your own PR branch, never a shared or protected branch. Never use plain `--force`.
+
+The automated DCO workflow reads commit metadata through the GitHub API without checking out or running PR code. Missing or mismatched author sign-offs fail the check. GitHub exposes at most 250 commits through this API; split larger PRs so every commit can be checked.

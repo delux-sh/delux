@@ -1,0 +1,112 @@
+name: DCO
+
+# Use the trusted base-branch workflow, never a checkout of contributor code.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  dco:
+    name: Author sign-off
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check every PR commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_API_URL: ${{ github.api_url }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          def fail(message):
+              raise SystemExit("DCO: " + message)
+
+          endpoint = (
+              f"{os.environ['GH_API_URL']}/repos/{os.environ['GH_REPOSITORY']}"
+              f"/pulls/{int(os.environ['PR_NUMBER'])}"
+          )
+
+          def get(suffix=""):
+              request = urllib.request.Request(
+                  endpoint + suffix,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+                  method="GET",
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if response.status != 200:
+                      fail("GitHub did not return a complete response.")
+                  return json.load(response)
+
+          def snapshot(pr):
+              return (pr["head"]["sha"], pr["base"]["sha"], pr["commits"])
+
+          def signed_by_author(commit):
+              author = commit.get("author") or {}
+              name, email = author.get("name"), author.get("email")
+              message = commit.get("message")
+              if not all(isinstance(value, str) and value.strip()
+                         for value in (name, email, message)):
+                  return False
+              # Only the final trailer paragraph counts, not quoted body text.
+              lines = re.split(r"\n[ \t]*\n", message.rstrip())[-1].splitlines()
+              matched = False
+              for index, line in enumerate(lines):
+                  if index and line.startswith((" ", "\t")):
+                      continue
+                  if not re.fullmatch(r"[A-Za-z0-9-]+:[ \t]+[^\r\n]+", line):
+                      return False
+                  signoff = re.fullmatch(
+                      r"Signed-off-by:[ \t]+([^<>\r\n]+)[ \t]+<([^<>\s]+)>[ \t]*",
+                      line,
+                      flags=re.IGNORECASE,
+                  )
+                  if signoff:
+                      matched |= (
+                          signoff[1].strip() == name.strip()
+                          and signoff[2].casefold() == email.strip().casefold()
+                      )
+              return matched
+
+          before = snapshot(get())
+          count = before[2]
+          if before[0] != os.environ["PR_HEAD_SHA"]:
+              fail("PR changed since this event; use the latest workflow run.")
+          # The PR commits API exposes at most 250 commits. Never accept a subset.
+          if type(count) is not int or not 1 <= count <= 250:
+              fail("PR must contain 1–250 commits; split larger PRs for complete checking.")
+          commits = []
+          for page in range(1, (count + 99) // 100 + 1):
+              batch = get(f"/commits?per_page=100&page={page}")
+              if not isinstance(batch, list) or len(batch) != min(100, count - len(commits)):
+                  fail("Commit pagination was incomplete or changed; rerun the check.")
+              commits.extend(batch)
+          shas = [commit["sha"] for commit in commits]
+          if (not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in shas)
+                  or len(set(shas)) != count or shas[-1] != before[0]):
+              fail("Commit list does not match the complete PR head.")
+          if snapshot(get()) != before:
+              fail("PR changed during checking; rerun the check.")
+          unsigned = [commit["sha"] for commit in commits
+                      if not signed_by_author(commit["commit"])]
+          if unsigned:
+              # Log only validated SHAs, never contributor-controlled messages or names.
+              for sha in unsigned:
+                  print(f"DCO: {sha} lacks a Signed-off-by trailer matching its author.")
+              fail("See CONTRIBUTING.md for git commit -s and safe amendment instructions.")
+          print(f"DCO: all {count} PR commits have matching author sign-offs.")
+          PY

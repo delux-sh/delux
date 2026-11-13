@@ -1,0 +1,22 @@
+Delux third-party dependency notices
+
+This inventory covers dependencies for all supported release targets, including
+build dependencies. Not every listed component is linked into every binary.
+Delux itself is licensed under GPL-3.0-or-later; see LICENSE.
+
+Rust toolchain notices are in RUST-NOTICES.html. That upstream inventory also
+covers compiler and optional components not included in the Delux executable.
+MUSL-COPYRIGHT covers the musl C library used by Linux builds.
+
+{{#each licenses}}
+==============================================================================
+{{name}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}} ({{crate.repository}})
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

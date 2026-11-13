@@ -1,0 +1,31 @@
+[package]
+name = "delux"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Find existing tmux sessions across your computers and attach to them over SSH"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/delux-sh/delux"
+homepage = "https://github.com/delux-sh/delux"
+readme = "README.md"
+keywords = ["tmux", "ssh", "tailscale", "tui", "terminal"]
+categories = ["command-line-utilities"]
+publish = false
+
+[dependencies]
+base64 = "0.23.1"
+caseless = "0.2.2"
+libc = "0.2.191"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+signal-hook = "0.4.5"
+unicode-general-category = "1.1.0"
+unicode-width = "0.2.2"
+# Without std, vte bounds OSC storage to 1 KiB instead of an unbounded Vec.
+vt100 = { version = "0.18.1", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

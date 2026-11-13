@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in Delux doesn't work as described
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Delux version
+      description: Output of `delux --version`.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Local system
+      description: OS and architecture, terminal, and whether you ran Delux inside tmux.
+      placeholder: macOS 26 arm64, Ghostty, outside tmux
+    validations:
+      required: true
+  - type: textarea
+    id: remote
+    attributes:
+      label: Remote computers
+      description: For problems with other computers, their OS, `tmux -V`, and how they're reached (Tailscale discovery, `--host`, or `cli.json`).
+  - type: textarea
+    id: list
+    attributes:
+      label: "`delux list --json` output"
+      description: Redact credentials, hostnames, IP addresses, usernames, session names, and filesystem paths you do not want to make public. Never include private keys or tokens.
+      render: json
