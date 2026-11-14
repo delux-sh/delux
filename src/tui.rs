@@ -13,9 +13,10 @@ use ratatui::crossterm::{
     cursor::{Hide, Show},
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute,
+    style::Print,
     terminal::{
         BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen,
         LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -52,6 +53,9 @@ const PREVIEW_REFRESH: Duration = Duration::from_secs(1);
 const PINNED_RECENTS: usize = 5;
 /// How long the preview shows static after the channel changes.
 const CHANNEL_STATIC: Duration = Duration::from_millis(150);
+// Request wheel/button reports, not the unimplemented all-motion tracking mode.
+const ENABLE_MOUSE: &str = "\x1b[?1000h\x1b[?1006h";
+const DISABLE_MOUSE: &str = "\x1b[?1000l\x1b[?1006l";
 
 type Discover = Arc<dyn Fn(&Cancel) -> Result<(Vec<Worker>, String), String> + Send + Sync>;
 type Scan = Arc<dyn Fn(&Cancel, Vec<Worker>) -> mpsc::Receiver<Inventory> + Send + Sync>;
@@ -224,6 +228,7 @@ enum Message {
     Spinner,
     Tick(Instant),
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Paste(String),
 }
 
@@ -262,6 +267,7 @@ struct Picker {
     cursor: Option<usize>,
     list_state: ListState,
     list_height: u16,
+    list_area: Rect,
     selection: Selection,
     state: State,
     state_error: String,
@@ -310,6 +316,7 @@ impl Picker {
             cursor: None,
             list_state: ListState::default(),
             list_height: 0,
+            list_area: Rect::default(),
             selection: Selection::None,
             state,
             state_error,
@@ -417,7 +424,7 @@ impl Picker {
                 session,
                 result,
             } => {
-                if generation != self.generation || self.active.is_some() {
+                if generation != self.generation || self.shows_terminal() {
                     return None;
                 }
                 if self
@@ -532,6 +539,7 @@ impl Picker {
             Message::Spinner => self.frame = (self.frame + 1) % SPINNER.len(),
             Message::Tick(now) => return self.tick(now),
             Message::Key(key) => return self.key(key),
+            Message::Mouse(event) => return self.mouse(event),
             Message::Paste(text) => return self.paste(&text),
         }
         None
@@ -554,12 +562,12 @@ impl Picker {
     fn tick(&mut self, now: Instant) -> Option<Command> {
         self.clock = Some(now);
         self.static_seed = self.static_seed.wrapping_add(1);
-        if self.active.is_none() && self.preview_visible && self.selection != self.screen_selection
-        {
+        let previewing = self.preview_visible && !self.shows_terminal();
+        if previewing && self.selection != self.screen_selection {
             self.screen_selection = self.selection.clone();
             self.static_until = Some(now + CHANNEL_STATIC);
         }
-        let selected = if self.active.is_none() && self.preview_visible {
+        let selected = if previewing {
             self.selected_session()
         } else {
             None
@@ -724,6 +732,58 @@ impl Picker {
             KeyCode::Char('q') => self.quit(),
             KeyCode::Enter => return self.activate(),
             _ => {}
+        }
+        None
+    }
+
+    fn terminal_mouse_event(&self, mut event: MouseEvent) -> Option<MouseEvent> {
+        if !matches!(
+            event.kind,
+            MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight
+        ) || !self.terminal_focused
+            || !self.terminal_visible
+            || self.active.is_none()
+            || self.input.is_some()
+            || self.filtering
+            || !self
+                .terminal_area
+                .contains((event.column, event.row).into())
+        {
+            return None;
+        }
+        event.column -= self.terminal_area.x;
+        event.row -= self.terminal_area.y;
+        Some(event)
+    }
+
+    fn mouse(&mut self, event: MouseEvent) -> Option<Command> {
+        if let Some(event) = self.terminal_mouse_event(event) {
+            let active = self.active.as_mut()?;
+            match active.terminal.scroll(event) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.notice.clear();
+                    self.notice.push_str(
+                        "Scroll: tmux prefix+[ for copy mode, or set -g mouse on on that computer.",
+                    );
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.notice = format!("Scroll not sent: {}", display(&error.to_string(), 200));
+                }
+                Err(error) => return self.finish_terminal(Err(error.to_string())),
+            }
+        } else if !self.terminal_focused
+            && self.input.is_none()
+            && self.list_area.contains((event.column, event.row).into())
+        {
+            match event.kind {
+                MouseEventKind::ScrollUp => self.move_cursor(-1),
+                MouseEventKind::ScrollDown => self.move_cursor(1),
+                _ => {}
+            }
         }
         None
     }
@@ -955,6 +1015,15 @@ impl Picker {
         Some((self.entries[row.entry].worker.clone(), session))
     }
 
+    fn shows_terminal(&self) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            self.terminal_focused
+                || self.current_row().is_some_and(|row| {
+                    active.matches(&self.entries[row.entry].worker, self.session(row))
+                })
+        })
+    }
+
     fn move_cursor(&mut self, delta: isize) {
         let choices: Vec<usize> = self
             .rows
@@ -1182,6 +1251,7 @@ impl Picker {
         let area = frame.area();
         let tint = self.tint;
         self.terminal_visible = false;
+        self.list_area = Rect::default();
         if self.active.is_some() && self.terminal_focused && area.height < 5 {
             self.preview_visible = false;
             self.list_height = 0;
@@ -1268,7 +1338,8 @@ impl Picker {
         } else {
             (body, None)
         };
-        self.preview_visible = self.active.is_none() && preview_area.is_some();
+        let show_terminal = self.shows_terminal();
+        self.preview_visible = !show_terminal && preview_area.is_some();
         self.list_height = list_area.height;
 
         let items = self.render_rows(compact, list_area.width);
@@ -1294,6 +1365,7 @@ impl Picker {
                 tint.secondary(),
             ))]
         };
+        self.list_area = block.inner(list_area);
         self.list_state.select(self.cursor);
         let list = List::new(items)
             .block(block)
@@ -1301,7 +1373,7 @@ impl Picker {
             .highlight_style(tint.selected());
         frame.render_stateful_widget(list, list_area, &mut self.list_state);
         if let Some(area) = preview_area {
-            if self.active.is_some() {
+            if show_terminal {
                 self.render_terminal(frame, area);
             } else {
                 self.terminal_area = Block::bordered().inner(area);
@@ -1919,6 +1991,7 @@ fn restore_terminal() {
         io::stdout(),
         EndSynchronizedUpdate,
         DisableBracketedPaste,
+        Print(DISABLE_MOUSE),
         LeaveAlternateScreen,
         Show
     );
@@ -1950,6 +2023,7 @@ impl TerminalGuard {
             io::stdout(),
             EndSynchronizedUpdate,
             DisableBracketedPaste,
+            Print(DISABLE_MOUSE),
             LeaveAlternateScreen,
             Show
         );
@@ -1967,6 +2041,7 @@ impl TerminalGuard {
             io::stdout(),
             EnterAlternateScreen,
             EnableBracketedPaste,
+            Print(ENABLE_MOUSE),
             Hide
         )
     }
@@ -2230,6 +2305,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         if event::poll(wait).map_err(|error| error.to_string())? {
             let command = match event::read().map_err(|error| error.to_string())? {
                 Event::Key(key) => picker.update(Message::Key(key)),
+                Event::Mouse(event) => picker.update(Message::Mouse(event)),
                 Event::Paste(text) => picker.update(Message::Paste(text)),
                 _ => None,
             };
@@ -2628,21 +2704,77 @@ mod tests {
     }
 
     #[test]
-    fn active_client_suppresses_and_cancels_preview_captures() {
-        let mut harness = terminal_harness(&["/bin/cat"]);
+    fn browsing_previews_other_sessions_without_disconnect() {
+        let mut harness = terminal_harness(&[
+            "/bin/sh",
+            "-c",
+            "printf 'CONNECTED_OUTPUT\\r\\n'; read line; printf 'BACKGROUND_OUTPUT\\r\\n'; exec /bin/cat",
+        ]);
+        let started = harness.picker.active.as_ref().unwrap().started;
         let cancel = Cancel::new();
         harness.picker.preview_inflight = Some((("box".into(), "$0".into()), cancel.clone()));
         let now = Instant::now();
         harness.tick(now);
         assert!(cancel.is_cancelled());
-        harness
-            .picker
-            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        let back = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        harness.picker.key(back);
+        harness.buffer(120, 30);
+        assert!(harness.picker.terminal_visible);
+        assert!(!harness.picker.preview_visible);
+
         harness.press(&["down"]);
         harness.buffer(120, 30);
-        harness.tick(now + PREVIEW_DEBOUNCE + PREVIEW_REFRESH);
-        assert!(harness.effects.borrow().previews.is_empty());
-        assert!(harness.picker.active.is_some());
+        assert!(!harness.picker.terminal_visible);
+        assert!(harness.picker.preview_visible);
+        harness.tick(now);
+        harness.tick(now + PREVIEW_DEBOUNCE);
+        let view = harness.rendered(120, 30);
+        assert!(view.contains("output of other on box"), "{view}");
+
+        // The hidden PTY must still be drained, not disconnected or paused.
+        harness
+            .picker
+            .active
+            .as_mut()
+            .unwrap()
+            .terminal
+            .paste("\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(harness.picker.poll_terminal().is_none());
+            if harness
+                .picker
+                .active
+                .as_ref()
+                .unwrap()
+                .terminal
+                .contents()
+                .contains("BACKGROUND_OUTPUT")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "hidden PTY stopped draining");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        harness.press(&["tab"]);
+        let view = harness.rendered(120, 30);
+        assert!(view.contains("BACKGROUND_OUTPUT"), "{view}");
+        assert!(!view.contains("output of other on box"), "{view}");
+        assert!(harness.picker.terminal_visible);
+        assert!(!harness.picker.preview_visible);
+        assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+        assert_eq!(harness.picker.selected_session().unwrap().1.id, "$1");
+        assert!(harness.launched().is_empty());
+
+        harness.picker.key(back);
+        let view = harness.rendered(120, 30);
+        assert!(view.contains("output of other on box"), "{view}");
+        harness.press(&["up"]);
+        let view = harness.rendered(120, 30);
+        assert!(view.contains("BACKGROUND_OUTPUT"), "{view}");
+        assert!(harness.picker.terminal_visible);
     }
 
     #[test]
@@ -3664,5 +3796,209 @@ mod tests {
                 .contains("unreadable picker state")
         );
         assert!(!harness.picker.state_writable);
+    }
+
+    fn wheel(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn wheel_coordinates_follow_rendered_terminal_content() {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        for (width, height) in [(120, 30), (70, 40), (40, 12), (2, 2), (1, 1)] {
+            harness.buffer(width, height);
+            let area = harness.picker.terminal_area;
+            for kind in [
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollLeft,
+                MouseEventKind::ScrollRight,
+            ] {
+                for (column, row) in [(0, 0), (area.width - 1, area.height - 1)] {
+                    let mut event = wheel(kind, area.x + column, area.y + row);
+                    event.modifiers = KeyModifiers::SHIFT | KeyModifiers::CONTROL;
+                    assert_eq!(
+                        harness.picker.terminal_mouse_event(event),
+                        Some(MouseEvent {
+                            column,
+                            row,
+                            ..event
+                        }),
+                        "{width}x{height}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn focused_terminal_wheel_reaches_the_child_at_the_translated_cell() {
+        let mut harness = terminal_harness(&[
+            "/bin/sh",
+            "-c",
+            "stty raw -echo; printf '\\033[?1000h\\033[?1006hWHEEL_READY'; \
+             dd bs=1 count=10 2>/dev/null | od -An -tx1; sleep 30",
+        ]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(harness.picker.poll_terminal().is_none());
+            if harness.rendered(120, 30).contains("WHEEL_READY") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY mouse reporting did not start"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let area = harness.picker.terminal_area;
+        assert!(
+            harness
+                .picker
+                .update(Message::Mouse(wheel(
+                    MouseEventKind::ScrollDown,
+                    area.x + 2,
+                    area.y + 3,
+                )))
+                .is_none()
+        );
+        loop {
+            assert!(harness.picker.poll_terminal().is_none());
+            if harness
+                .rendered(120, 30)
+                .split_whitespace()
+                .collect::<String>()
+                .contains("1b5b3c36353b333b344d")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child did not receive the SGR wheel"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(harness.picker.notice.is_empty());
+    }
+
+    #[test]
+    fn wheel_ignores_borders_other_panes_and_nonwheel_events() {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        let area = harness.picker.terminal_area;
+        let list = harness.picker.list_area;
+        let selection = harness.picker.selection.clone();
+        for (column, row) in [
+            (area.x - 1, area.y),
+            (area.x, area.y - 1),
+            (area.right(), area.y),
+            (area.x, area.bottom()),
+            (list.x, list.y),
+            (0, 0),
+        ] {
+            let event = wheel(MouseEventKind::ScrollDown, column, row);
+            assert!(harness.picker.terminal_mouse_event(event).is_none());
+            assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        }
+        for kind in [
+            MouseEventKind::Down(event::MouseButton::Left),
+            MouseEventKind::Up(event::MouseButton::Left),
+            MouseEventKind::Drag(event::MouseButton::Left),
+            MouseEventKind::Moved,
+        ] {
+            let event = wheel(kind, area.x, area.y);
+            assert!(harness.picker.terminal_mouse_event(event).is_none());
+            assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        }
+        assert_eq!(harness.picker.selection, selection);
+        assert!(harness.picker.notice.is_empty());
+        assert!(harness.picker.terminal_focused);
+    }
+
+    #[test]
+    fn sidebar_wheel_uses_rendered_bounds_and_explicit_focus() {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        for (width, height) in [(120, 30), (70, 40), (40, 12)] {
+            harness
+                .picker
+                .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+            harness.buffer(width, height);
+            let list = harness.picker.list_area;
+            let initial = harness.picker.selection.clone();
+            let down = wheel(MouseEventKind::ScrollDown, list.right() - 1, list.y);
+            assert!(harness.picker.update(Message::Mouse(down)).is_none());
+            assert_ne!(harness.picker.selection, initial);
+            let up = MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                ..down
+            };
+            assert!(harness.picker.update(Message::Mouse(up)).is_none());
+            assert_eq!(harness.picker.selection, initial);
+            for event in [
+                wheel(MouseEventKind::ScrollDown, list.x - 1, list.y),
+                wheel(MouseEventKind::ScrollDown, list.x, list.y - 1),
+                wheel(MouseEventKind::ScrollRight, list.x, list.y),
+            ] {
+                assert!(harness.picker.update(Message::Mouse(event)).is_none());
+                assert_eq!(harness.picker.selection, initial);
+            }
+            if harness.picker.terminal_visible {
+                let area = harness.picker.terminal_area;
+                let event = wheel(MouseEventKind::ScrollDown, area.x, area.y);
+                assert!(harness.picker.terminal_mouse_event(event).is_none());
+                assert!(harness.picker.update(Message::Mouse(event)).is_none());
+                assert_eq!(harness.picker.selection, initial);
+                assert!(harness.picker.notice.is_empty());
+            }
+            harness.press(&["tab"]);
+            assert!(harness.picker.update(Message::Mouse(down)).is_none());
+            assert_eq!(harness.picker.selection, initial);
+        }
+    }
+
+    #[test]
+    fn wheel_requires_visible_active_terminal_without_dialogs() {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        let area = harness.picker.terminal_area;
+        let event = wheel(MouseEventKind::ScrollDown, area.x, area.y);
+        harness.picker.filtering = true;
+        assert!(harness.picker.terminal_mouse_event(event).is_none());
+        assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        harness.picker.filtering = false;
+        harness.picker.input = Some(UserInput {
+            key: "box".into(),
+            name: "box".into(),
+            destination: "box".into(),
+            text: String::new(),
+        });
+        assert!(harness.picker.terminal_mouse_event(event).is_none());
+        assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        harness.picker.input = None;
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.buffer(40, 12);
+        harness.press(&["tab"]);
+        assert!(!harness.picker.terminal_visible);
+        assert!(harness.picker.terminal_mouse_event(event).is_none());
+        assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        assert!(harness.picker.notice.is_empty());
+        harness.buffer(40, 12);
+        assert_eq!(harness.picker.list_area, Rect::default());
+        let area = harness.picker.terminal_area;
+        let event = wheel(MouseEventKind::ScrollDown, area.x, area.y);
+        assert!(harness.picker.terminal_mouse_event(event).is_some());
+        assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        assert!(harness.picker.notice.contains("tmux prefix+["));
+        assert!(harness.picker.notice.contains("set -g mouse on"));
+        harness.picker.notice.clear();
+        harness.picker.active = None;
+        assert!(harness.picker.terminal_mouse_event(event).is_none());
+        assert!(harness.picker.update(Message::Mouse(event)).is_none());
+        assert!(harness.picker.notice.is_empty());
     }
 }

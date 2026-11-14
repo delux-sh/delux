@@ -10,7 +10,9 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ChildStdout, Command, Stdio};
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -411,6 +413,81 @@ impl EmbeddedTerminal {
         let sequence = encode_key(key, self.parser.screen().application_cursor());
         self.parser.callbacks_mut().enqueue(sequence.bytes())?;
         self.flush_input()
+    }
+
+    /// Forward wheel input only when the child requested a compatible mouse
+    /// protocol. Coordinates are zero-based positions inside this PTY.
+    pub(crate) fn scroll(&mut self, event: MouseEvent) -> io::Result<bool> {
+        let mut button = match event.kind {
+            MouseEventKind::ScrollUp => 64,
+            MouseEventKind::ScrollDown => 65,
+            MouseEventKind::ScrollLeft => 66,
+            MouseEventKind::ScrollRight => 67,
+            _ => return Ok(false),
+        };
+        let screen = self.parser.screen();
+        if matches!(
+            screen.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::None | vt100::MouseProtocolMode::Press
+        ) {
+            return Ok(false);
+        }
+        let (rows, cols) = screen.size();
+        if event.row >= rows.get() || event.column >= cols.get() {
+            return Ok(false);
+        }
+        if event.modifiers.contains(KeyModifiers::SHIFT) {
+            button |= 4;
+        }
+        if event.modifiers.contains(KeyModifiers::ALT) {
+            button |= 8;
+        }
+        if event.modifiers.contains(KeyModifiers::CONTROL) {
+            button |= 16;
+        }
+        let mut sequence = Sequence::new();
+        match screen.mouse_protocol_encoding() {
+            vt100::MouseProtocolEncoding::Sgr => {
+                let _ = write!(
+                    sequence,
+                    "\x1b[<{button};{};{}M",
+                    u32::from(event.column) + 1,
+                    u32::from(event.row) + 1
+                );
+            }
+            vt100::MouseProtocolEncoding::Default => {
+                // The one-based position plus 32 must fit in one byte.
+                if event.column > 222 || event.row > 222 {
+                    return Ok(false);
+                }
+                sequence.bytes[..6].copy_from_slice(&[
+                    0x1b,
+                    b'[',
+                    b'M',
+                    button + 32,
+                    (event.column + 33) as u8,
+                    (event.row + 33) as u8,
+                ]);
+                sequence.len = 6;
+            }
+            vt100::MouseProtocolEncoding::Utf8 => {
+                // Xterm's 1005 protocol supports positions through 2015,
+                // encoded in at most two UTF-8 bytes after adding 32.
+                if event.column > 2014 || event.row > 2014 {
+                    return Ok(false);
+                }
+                let _ = sequence.write_str("\x1b[M");
+                let _ = sequence.write_char(char::from(button + 32));
+                for coordinate in [event.column, event.row] {
+                    let _ = sequence.write_char(
+                        char::from_u32(u32::from(coordinate) + 33).expect("bounded coordinate"),
+                    );
+                }
+            }
+        }
+        self.parser.callbacks_mut().enqueue(sequence.bytes())?;
+        self.flush_input()?;
+        Ok(true)
     }
 
     /// Reject a paste atomically if it will not fit: never queue a partial
@@ -885,6 +962,223 @@ mod tests {
                 .contains("1b5b3230307e780a791b5b3230317e"),
             "{response:?}",
         );
+    }
+
+    fn wheel_receiver(modes: &str, byte_count: usize, rows: u16, cols: u16) -> EmbeddedTerminal {
+        let script = format!(
+            "stty raw -echo; stty opost onlcr; printf '{modes}READY\\r\\n'; \
+             dd bs=1 count={byte_count} 2>/dev/null | od -An -tx1"
+        );
+        let mut terminal = shell(&script, rows, cols);
+        until(&mut terminal, |t| t.contents().contains("READY"));
+        terminal
+    }
+
+    fn wheel(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn assert_received(terminal: &mut EmbeddedTerminal, expected: &[u8]) {
+        until(terminal, |t| t.exit_status.is_some() && t.eof);
+        assert_eq!(terminal.exit_status, Some(0));
+        let mut hex = String::from("READY");
+        for byte in expected {
+            write!(hex, "{byte:02x}").unwrap();
+        }
+        assert_eq!(
+            terminal.contents().split_whitespace().collect::<String>(),
+            hex
+        );
+    }
+
+    #[test]
+    fn real_pty_receives_sgr_wheels_with_modifiers_and_unchanged_arrows() {
+        let _env = crate::test_support::env_read();
+        for mode in [1000, 1002, 1003] {
+            let expected = b"\x1b[<64;1;1M\x1b[<69;2;3M\x1b[<74;4;5M\x1b[<95;120;8M\x1b[A\x1b[Bq";
+            let mut terminal =
+                wheel_receiver(&format!("\x1b[?{mode}h\x1b[?1006h"), expected.len(), 8, 120);
+            for (kind, column, row, modifiers) in [
+                (MouseEventKind::ScrollUp, 0, 0, KeyModifiers::NONE),
+                (MouseEventKind::ScrollDown, 1, 2, KeyModifiers::SHIFT),
+                (MouseEventKind::ScrollLeft, 3, 4, KeyModifiers::ALT),
+                (
+                    MouseEventKind::ScrollRight,
+                    119,
+                    7,
+                    KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL,
+                ),
+            ] {
+                let mut event = wheel(kind, column, row);
+                event.modifiers = modifiers;
+                assert!(terminal.scroll(event).unwrap());
+            }
+            for kind in [
+                MouseEventKind::Moved,
+                MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+                MouseEventKind::Up(ratatui::crossterm::event::MouseButton::Left),
+                MouseEventKind::Drag(ratatui::crossterm::event::MouseButton::Left),
+            ] {
+                assert!(!terminal.scroll(wheel(kind, 0, 0)).unwrap());
+            }
+            for (column, row) in [(120, 0), (0, 8), (u16::MAX, u16::MAX)] {
+                assert!(
+                    !terminal
+                        .scroll(wheel(MouseEventKind::ScrollUp, column, row))
+                        .unwrap()
+                );
+            }
+            for code in [KeyCode::Up, KeyCode::Down, KeyCode::Char('q')] {
+                terminal
+                    .send_key(KeyEvent::new(code, KeyModifiers::NONE))
+                    .unwrap();
+            }
+            assert_received(&mut terminal, expected);
+        }
+    }
+
+    #[test]
+    fn real_pty_ignores_wheels_without_reporting_and_after_it_is_disabled() {
+        let _env = crate::test_support::env_read();
+        for modes in ["", "\x1b[?9h", "\x1b[?1006h", "\x1b[?9h\x1b[?1006h"] {
+            let expected = b"\x1b[Aq";
+            let mut terminal = wheel_receiver(modes, expected.len(), 8, 120);
+            for kind in [
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollLeft,
+                MouseEventKind::ScrollRight,
+            ] {
+                assert!(!terminal.scroll(wheel(kind, 0, 0)).unwrap());
+            }
+            terminal
+                .send_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+                .unwrap();
+            terminal.paste("q").unwrap();
+            assert_received(&mut terminal, expected);
+        }
+
+        let mut terminal = shell(
+            r"stty raw -echo; printf '\033[?1000h\033[?1006hREADY\r\n'; \
+              dd bs=1 count=10 2>/dev/null | od -An -tx1; \
+              printf '\033[?1000l\r\nOFF\r\n'; \
+              dd bs=1 count=4 2>/dev/null | od -An -tx1",
+            8,
+            120,
+        );
+        until(&mut terminal, |t| t.contents().contains("READY"));
+        assert!(
+            terminal
+                .scroll(wheel(MouseEventKind::ScrollUp, 0, 0))
+                .unwrap()
+        );
+        until(&mut terminal, |t| t.contents().contains("OFF"));
+        assert!(
+            !terminal
+                .scroll(wheel(MouseEventKind::ScrollDown, 0, 0))
+                .unwrap()
+        );
+        terminal
+            .send_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .unwrap();
+        terminal.paste("q").unwrap();
+        until(&mut terminal, |t| t.exit_status.is_some() && t.eof);
+        assert_eq!(terminal.exit_status, Some(0));
+        assert_eq!(
+            terminal.contents().split_whitespace().collect::<String>(),
+            "READY1b5b3c36343b313b314dOFF1b5b4171"
+        );
+    }
+
+    #[test]
+    fn real_pty_wheel_encoding_boundaries_never_wrap_coordinates() {
+        let _env = crate::test_support::env_read();
+        // Each accepted packet is followed by a sentinel. Rejected wheel
+        // events must not insert bytes ahead of that sentinel, including arrows.
+        for (encoding, rows, cols, column, row, invalid_column, invalid_row, packet) in [
+            ("", 8, 225, 222, 0, 223, 0, b"\x1b[M\x7f\xff!".as_slice()),
+            ("", 225, 120, 0, 222, 0, 223, b"\x1b[M\x7f!\xff"),
+            (
+                "\x1b[?1005h",
+                8,
+                2016,
+                2014,
+                0,
+                2015,
+                0,
+                b"\x1b[M\x7f\xdf\xbf!",
+            ),
+            (
+                "\x1b[?1005h",
+                2016,
+                120,
+                0,
+                2014,
+                0,
+                2015,
+                b"\x1b[M\x7f!\xdf\xbf",
+            ),
+            ("\x1b[?1006h", 8, 300, 299, 7, 300, 7, b"\x1b[<95;300;8M"),
+        ] {
+            let mut terminal = wheel_receiver(
+                &format!("\x1b[?1000h{encoding}"),
+                packet.len() + 1,
+                rows,
+                cols,
+            );
+            let mut event = wheel(MouseEventKind::ScrollRight, column, row);
+            event.modifiers = KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL;
+            assert!(terminal.scroll(event).unwrap());
+            event.column = invalid_column;
+            event.row = invalid_row;
+            assert!(!terminal.scroll(event).unwrap());
+            terminal.paste("q").unwrap();
+            let mut expected = packet.to_vec();
+            expected.push(b'q');
+            assert_received(&mut terminal, &expected);
+        }
+
+        let expected = b"\x1b[M`\x7f\xc2\x80q";
+        let mut terminal = wheel_receiver("\x1b[?1000h\x1b[?1005h", expected.len(), 96, 120);
+        assert!(
+            terminal
+                .scroll(wheel(MouseEventKind::ScrollUp, 94, 95))
+                .unwrap()
+        );
+        terminal.paste("q").unwrap();
+        assert_received(&mut terminal, expected);
+    }
+
+    #[test]
+    fn wheel_queue_overflow_rejects_the_entire_packet_and_recovers() {
+        let _env = crate::test_support::env_read();
+        let expected = b"\x1b[<64;1;1Mq";
+        let mut terminal = wheel_receiver("\x1b[?1000h\x1b[?1006h", expected.len(), 8, 120);
+        terminal
+            .parser
+            .callbacks_mut()
+            .pending
+            .extend(std::iter::repeat_n(b'x', INPUT_LIMIT - 5));
+        let error = terminal
+            .scroll(wheel(MouseEventKind::ScrollUp, 0, 0))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        let pending = &mut terminal.parser.callbacks_mut().pending;
+        assert_eq!(pending.len(), INPUT_LIMIT - 5);
+        assert!(pending.iter().all(|byte| *byte == b'x'));
+        pending.clear();
+        assert!(
+            terminal
+                .scroll(wheel(MouseEventKind::ScrollUp, 0, 0))
+                .unwrap()
+        );
+        terminal.paste("q").unwrap();
+        assert_received(&mut terminal, expected);
     }
 
     #[test]

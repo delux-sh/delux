@@ -51,7 +51,9 @@ If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--
 | `r` | Rescan |
 | `q` | Quit |
 
-With the terminal focused, typing goes to the session. Use `shift-tab` before picker commands. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
+With the terminal focused, typing goes to the session. Use `shift-tab` before picker commands. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
+
+Scroll with the pointer over the focused panel. For tmux scrollback, run `tmux set -g mouse on` on the session's computer, or use copy mode (usually Ctrl-B, then `[`). The list also supports wheel navigation.
 
 **Sign in** and **Trust key** open SSH prompts in the right panel. Passwords stay hidden; Ctrl-C there cancels sign-in. Verify host-key fingerprints before accepting them.
 
@@ -61,7 +63,7 @@ Delux finds **existing sessions on the default tmux server**. It doesn't create 
 
 Session ages show when output last changed, not whether a program is busy or finished.
 
-The embedded terminal is keyboard-only, without terminal graphics or advanced keyboard protocols. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
+The embedded terminal supports keyboard input and mouse-wheel scrolling, but not mouse clicks/dragging, terminal graphics, or advanced keyboard protocols. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
 
 ## Configuration
 

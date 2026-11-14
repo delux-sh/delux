@@ -8,6 +8,22 @@ The DCO workflow passed 17 offline cases covering valid and missing author sign-
 
 A native macOS archive built with the GPL grant and retained third-party/toolchain notices; its checksum and contents were verified. Cargo's license metadata and the future Homebrew formula's license and Ruby syntax were checked. Binary distribution and Homebrew remain deferred; packaging smoke artifacts are private and outside the publication tree.
 
+## Browsing previews while connected
+
+The right panel now follows list selection while retaining the connected PTY in the background. Selecting its own session shows the live terminal; selecting another row shows that row's preview. Tab returns to the connected terminal, while Enter opens the selected session.
+
+All 42 picker tests passed, including a regression covering preview delivery with an active client, hidden PTY output draining, and switching back without reconnecting. Formatting, Clippy with warnings denied, and the native macOS ARM64 release build passed.
+
+An isolated real-PTY run with two local tmux sessions verified selection-driven previews, periodic preview refresh, background output, Tab restoring the exact original client, and Enter attaching the selected session. Browsing did not replace the connected client; quitting preserved both sessions. Fixture processes and files were removed. Remote SSH switching was not separately exercised.
+
+## Mouse-wheel forwarding
+
+Delux now captures mouse input and forwards wheel events over the focused terminal using the child's requested mouse protocol and panel-relative coordinates. It never substitutes arrow keys for scrolling. Wheel events over the focused list move selection; unsupported terminal scrolling shows tmux copy-mode/configuration guidance.
+
+Nine focused tests passed, covering real PTY delivery, SGR/legacy/UTF-8 encoding boundaries, modifiers, disabled reporting, queue overflow, coordinate translation, focus, and small layouts. Formatting, Clippy with warnings denied, and the macOS ARM64 release build passed.
+
+An isolated real-PTY run of the rebuilt binary with tmux 3.7b and OMP 18.18.9 verified injected wheel events moved tmux scrollback in both directions and preserved an unsent OMP composer draft. Sidebar scrolling did not scroll the connected terminal, right-panel wheels were ignored with list focus, and disabling tmux mouse support produced guidance rather than arrow-key input. Clean exit disabled mouse capture and preserved both sessions. Fixture processes and files were removed. Physical mouse/trackpad behavior in cmux and remote SSH wheel forwarding were not separately exercised.
+
 ## Preview authentication recovery
 
 Preview failures now preserve their status so rejected SSH authentication or host-key verification returns the computer to Sign in or Trust key. Stale sessions and cached previews are removed; successful right-panel authentication restores the session list. Results from an older scan, SSH destination, or session lifetime cannot invalidate the current computer.
