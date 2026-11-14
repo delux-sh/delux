@@ -22,6 +22,8 @@ All 21 embedded-terminal tests, three backend regressions, and the live tmux att
 
 The backend clear/redraw regression also passed with disconnected stdin and no controlling terminal. It exercises emitted terminal commands directly rather than requiring CI to supply a physical terminal size; resize remains covered by the embedded-terminal tests and real-PTY checks below.
 
+The cancellation regression verifies that shutdown returns while the runner's registration is still held and that the child receives SIGKILL. It uses a bounded completion signal instead of a 500 ms wall-clock assertion that failed under CI scheduling delays; the focused regression passed.
+
 Isolated real-PTY checks with tmux 3.7b and OMP 18.20.0 verified typing, preserved unsent drafts, Shift-Tab/Tab focus, and resize. OMP typing produced 21 committed updates without cursor hide/show toggles. The final release binary displayed 34 animated updates over two seconds, with deliberately split child frames and no cursor hide/show toggles; input, focus changes, clean exit, and session preservation passed. Fixtures were removed. This verifies terminal output, not physical blink timing in cmux; remote SSH latency and a live tmux 3.2 run were not separately tested.
 
 ## Remote username suggestions at sign-in

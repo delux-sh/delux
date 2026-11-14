@@ -265,6 +265,7 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -309,28 +310,33 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_kills_even_when_the_runner_cannot_reap_within_the_wait_limit() {
+    fn shutdown_returns_and_kills_before_the_runner_reaps() {
         let _environment = env_read();
         let cancel = Cancel::new();
         let mut command = Command::new("/bin/sleep");
         command.arg("30");
         let (mut child, mut guard) = cancel.spawn_command(&mut command, true).unwrap().unwrap();
-        let started = Instant::now();
-        // This thread owns the runner, so registration cannot be removed until
-        // cancel_and_wait times out. Termination must not depend on its progress.
-        cancel.cancel_and_wait();
-        let waited = started.elapsed();
+        // Keep the runner's registration alive until shutdown returns. A
+        // scheduling delay is not a cancellation failure; waiting for this
+        // runner to unregister would be.
+        let shutdown_cancel = cancel.clone();
+        let (finished, completion) = mpsc::channel();
+        let shutdown = thread::spawn(move || {
+            shutdown_cancel.cancel_and_wait();
+            let _ = finished.send(());
+        });
+        completion
+            .recv_timeout(Duration::from_secs(5))
+            .expect("shutdown waited for the runner to reap");
+        shutdown.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
         let status = loop {
             if let Some(status) = guard.try_wait(&mut child).unwrap() {
                 break status;
             }
-            assert!(
-                started.elapsed() < Duration::from_secs(1),
-                "child survived shutdown"
-            );
+            assert!(Instant::now() < deadline, "child survived shutdown");
             thread::yield_now();
         };
-        assert!(waited < Duration::from_millis(500), "waited {waited:?}");
         assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
 
