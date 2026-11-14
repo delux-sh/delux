@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
     cursor::{Hide, Show},
     event::{
@@ -18,14 +17,14 @@ use ratatui::crossterm::{
     execute,
     style::Print,
     terminal::{
-        BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen,
-        LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode,
     },
 };
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -42,6 +41,7 @@ use crate::options::Options;
 use crate::state::{State, StateChange, default_state_path, load_state, update_state};
 use crate::theme::{self, Tint};
 use crate::tmux::{INVENTORY_SCRIPT, Session, attach_script, parse_inventory};
+use crate::tui_backend::TuiBackend;
 use crate::workers::{Config, Worker, discover, load_config, save_host_mapping, with_user};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -67,11 +67,14 @@ type Preview = Arc<
 type SaveMapping = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
 type UpdateState = Box<dyn FnMut(StateChange<'_>) -> Result<State, String>>;
 
+type ResolveUser = Arc<dyn Fn(&Cancel, &str) -> Result<String, String> + Send + Sync>;
+
 /// Discovery, access checks and persistence, injected for model tests.
 struct Services {
     discover: Discover,
     scan: Scan,
     preview: Preview,
+    resolve_user: ResolveUser,
     sharing_active: Box<dyn Fn(&str) -> bool>,
     save_mapping: SaveMapping,
     update_state: UpdateState,
@@ -205,9 +208,31 @@ struct UserInput {
     name: String,
     destination: String,
     text: String,
+    connect: bool,
+    ssh_user: Option<String>,
+    lookup: Option<Cancel>,
+}
+
+impl UserInput {
+    fn stop_lookup(&mut self) {
+        if let Some(cancel) = self.lookup.take() {
+            cancel.cancel();
+        }
+    }
+}
+
+impl Drop for UserInput {
+    fn drop(&mut self) {
+        self.stop_lookup();
+    }
 }
 
 enum Message {
+    SshUser {
+        worker: Worker,
+        cancel: Cancel,
+        result: Result<String, String>,
+    },
     Discovered {
         generation: u64,
         result: Result<(Vec<Worker>, String), String>,
@@ -233,6 +258,10 @@ enum Message {
 }
 
 enum Command {
+    ResolveUser {
+        worker: Worker,
+        cancel: Cancel,
+    },
     Discover {
         generation: u64,
         cancel: Cancel,
@@ -366,6 +395,36 @@ impl Picker {
 
     fn update(&mut self, message: Message) -> Option<Command> {
         match message {
+            Message::SshUser {
+                worker,
+                cancel,
+                result,
+            } => {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+                let input = self.input.as_mut()?;
+                if input.lookup.is_none()
+                    || input.key != worker.key
+                    || Some(&input.destination) != worker.destination.as_ref()
+                {
+                    return None;
+                }
+                input.lookup = None;
+                match result {
+                    Ok(user) => {
+                        input.text = user.clone();
+                        input.ssh_user = Some(user);
+                        self.notice.clear();
+                    }
+                    Err(error) => {
+                        self.notice = format!(
+                            "{} Enter the remote username manually.",
+                            display(&error, 300),
+                        );
+                    }
+                }
+            }
             Message::Discovered { generation, result } => {
                 if generation != self.generation {
                     return None;
@@ -623,6 +682,10 @@ impl Picker {
         if key.code == KeyCode::BackTab
             || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
         {
+            if self.input.as_ref().is_some_and(|input| input.connect) {
+                self.input = None;
+                self.notice.clear();
+            }
             self.terminal_focused = false;
             return None;
         }
@@ -646,6 +709,14 @@ impl Picker {
                 }
                 return self.finish_terminal(Err(error.to_string()));
             }
+            return None;
+        }
+        if self.input.as_ref().is_some_and(|input| input.connect)
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.input = None;
+            self.notice.clear();
             return None;
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -720,7 +791,7 @@ impl Picker {
                 }
             }
             KeyCode::Char('f') => self.toggle_pin(),
-            KeyCode::Char('u') => self.start_user_input(),
+            KeyCode::Char('u') => return self.start_user_input(false),
             KeyCode::Char('p') => {
                 self.tint = self.tint.next();
                 self.notice = format!("Selector tint: {}.", self.tint.label());
@@ -801,9 +872,12 @@ impl Picker {
                 return self.finish_terminal(Err(error.to_string()));
             }
         } else if let Some(input) = &mut self.input {
-            input
-                .text
-                .extend(text.chars().filter(|ch| !ch.is_control()));
+            input.stop_lookup();
+            input.text.extend(
+                text.chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(64usize.saturating_sub(input.text.chars().count())),
+            );
         } else if self.filtering {
             self.filter
                 .extend(text.chars().filter(|ch| !ch.is_control()));
@@ -883,22 +957,78 @@ impl Picker {
     fn input_key(&mut self, key: KeyEvent) -> Option<Command> {
         let input = self.input.as_mut()?;
         match key.code {
-            KeyCode::Esc => self.input = None,
+            KeyCode::Esc => {
+                self.input = None;
+                self.notice.clear();
+            }
             KeyCode::Backspace => {
+                input.stop_lookup();
                 input.text.pop();
             }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                input.stop_lookup();
+                input.text.clear();
+            }
             KeyCode::Enter => {
-                let input = self.input.take()?;
-                let destination = match with_user(&input.destination, input.text.trim()) {
-                    Ok(destination) => destination,
-                    Err(error) => {
-                        self.notice = display(&error, 400);
-                        return None;
+                if input.lookup.is_some() {
+                    self.notice =
+                        "Reading SSH settings; wait or type a username to override.".into();
+                    return None;
+                }
+                if input.connect && input.text.trim().is_empty() {
+                    self.notice = "Enter the username on the remote computer.".into();
+                    return None;
+                }
+                let using_ssh_user =
+                    input.connect && input.ssh_user.as_deref() == Some(input.text.as_str());
+                let destination = if using_ssh_user {
+                    input.destination.clone()
+                } else {
+                    match with_user(&input.destination, input.text.trim()) {
+                        Ok(destination) => destination,
+                        Err(error) => {
+                            self.notice = display(&error, 400);
+                            return None;
+                        }
                     }
                 };
-                if let Err(error) = (self.services.save_mapping)(&input.key, &destination) {
+                let entry_index = if input.connect {
+                    let Some(index) = self.entries.iter().position(|entry| {
+                        entry.worker.key == input.key
+                            && entry.worker.destination.as_deref() == Some(&input.destination)
+                    }) else {
+                        self.notice =
+                            "Computer configuration changed; cancel and try again.".into();
+                        return None;
+                    };
+                    Some(index)
+                } else {
+                    None
+                };
+                if (destination != input.destination || !input.connect)
+                    && let Err(error) = (self.services.save_mapping)(&input.key, &destination)
+                {
                     self.notice = format!("Could not save cli.json: {}", display(&error, 400));
                     return None;
+                }
+                let input = self.input.take()?;
+                if let Some(index) = entry_index {
+                    let entry = &mut self.entries[index];
+                    entry.worker.destination = Some(destination);
+                    if let Some(inventory) = &mut entry.inventory {
+                        inventory.worker = entry.worker.clone();
+                        inventory.sessions.clear();
+                    }
+                    let worker = entry.worker.clone();
+                    self.previews.retain(|(key, _), _| *key != worker.key);
+                    self.notice = format!(
+                        "Signing in as {}. Verify any host fingerprint through a trusted channel.",
+                        display(&input.text, 64),
+                    );
+                    return Some(Command::Launch(Choice {
+                        worker,
+                        session: None,
+                    }));
                 }
                 self.notice = format!(
                     "Saved {} → {} in cli.json; rescanning.",
@@ -913,6 +1043,7 @@ impl Picker {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && input.text.chars().count() < 64 =>
             {
+                input.stop_lookup();
                 input.text.push(ch);
             }
             _ => {}
@@ -920,32 +1051,39 @@ impl Picker {
         None
     }
 
-    fn start_user_input(&mut self) {
-        let Some(row) = self.current_row() else {
-            return;
-        };
+    fn start_user_input(&mut self, connect: bool) -> Option<Command> {
+        let row = self.current_row()?;
         if !matches!(
             row.kind,
             RowKind::Computer | RowKind::Session | RowKind::Pinned
         ) {
-            return;
+            return None;
         }
         let worker = &self.entries[row.entry].worker;
         let Some(destination) = &worker.destination else {
             self.notice = "The local computer uses your own account; nothing to map.".into();
-            return;
+            return None;
         };
         let current = destination
             .rsplit_once('@')
             .map(|(user, _)| user.to_owned())
             .unwrap_or_default();
+        let lookup = (connect && current.is_empty()).then(|| self.cancel.child());
+        let command = lookup.as_ref().map(|cancel| Command::ResolveUser {
+            worker: worker.clone(),
+            cancel: cancel.clone(),
+        });
         self.input = Some(UserInput {
             key: worker.key.clone(),
             name: worker.name.clone(),
             destination: destination.clone(),
             text: current,
+            connect,
+            ssh_user: None,
+            lookup,
         });
         self.notice.clear();
+        command
     }
 
     fn toggle_pin(&mut self) {
@@ -1216,11 +1354,7 @@ impl Picker {
                     self.terminal_focused = true;
                     return None;
                 }
-                self.notice.clear();
-                return Some(Command::Launch(Choice {
-                    worker,
-                    session: None,
-                }));
+                return self.start_user_input(true);
             }
             _ => {
                 let detail = entry
@@ -1252,6 +1386,13 @@ impl Picker {
         let tint = self.tint;
         self.terminal_visible = false;
         self.list_area = Rect::default();
+        let signing_in = self.input.as_ref().is_some_and(|input| input.connect);
+        if signing_in && area.height < 5 {
+            self.preview_visible = false;
+            self.list_height = 0;
+            self.render_sign_in(frame, area);
+            return;
+        }
         if self.active.is_some() && self.terminal_focused && area.height < 5 {
             self.preview_visible = false;
             self.list_height = 0;
@@ -1259,7 +1400,9 @@ impl Picker {
             return;
         }
         let mut status_lines: Vec<Line<'static>> = Vec::new();
-        if let Some(input) = &self.input {
+        if let Some(input) = &self.input
+            && !input.connect
+        {
             status_lines.push(Line::styled(
                 format!(
                     "SSH user for {}: {}▏  (saved as user@{} in cli.json)",
@@ -1308,8 +1451,8 @@ impl Picker {
         let compact = body.width >= 80 || body.height >= 24;
         let width = 32;
         let beside = compact && body.width.saturating_sub(width) >= 48;
-        let (list_area, preview_area) = if self.active.is_some()
-            && self.terminal_focused
+        let (list_area, preview_area) = if (signing_in
+            || (self.active.is_some() && self.terminal_focused))
             && (!beside || body.height < 3)
             && body.height < 24
         {
@@ -1338,23 +1481,30 @@ impl Picker {
         } else {
             (body, None)
         };
-        let show_terminal = self.shows_terminal();
-        self.preview_visible = !show_terminal && preview_area.is_some();
+        let show_terminal = !signing_in && self.shows_terminal();
+        self.preview_visible = !signing_in && !show_terminal && preview_area.is_some();
         self.list_height = list_area.height;
 
-        let items = self.render_rows(compact, list_area.width);
+        let sidebar_inactive = self.terminal_focused || signing_in;
+        let items = self.render_rows(compact, list_area.width, sidebar_inactive);
         let mut block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(if self.terminal_focused {
-                theme::muted()
+            .border_style(if sidebar_inactive {
+                theme::inactive_sidebar()
             } else {
                 tint.border()
             })
             .title(Line::styled(
                 format!(" Computers · {computers} "),
-                tint.heading(),
+                if sidebar_inactive {
+                    theme::inactive_sidebar()
+                } else {
+                    tint.heading()
+                },
             ));
-        if let Some(background) = tint.background() {
+        if sidebar_inactive {
+            block = block.style(theme::inactive_sidebar());
+        } else if let Some(background) = tint.background() {
             block = block.style(Style::default().bg(background));
         }
         let items = if !items.is_empty() {
@@ -1362,7 +1512,11 @@ impl Picker {
         } else {
             vec![ListItem::new(Line::styled(
                 self.empty_message(),
-                tint.secondary(),
+                if sidebar_inactive {
+                    theme::inactive_sidebar()
+                } else {
+                    tint.secondary()
+                },
             ))]
         };
         self.list_area = block.inner(list_area);
@@ -1370,16 +1524,68 @@ impl Picker {
         let list = List::new(items)
             .block(block)
             .highlight_symbol("❯ ")
-            .highlight_style(tint.selected());
+            .highlight_style(if sidebar_inactive {
+                theme::inactive_selection()
+            } else {
+                tint.selected()
+            });
         frame.render_stateful_widget(list, list_area, &mut self.list_state);
         if let Some(area) = preview_area {
-            if show_terminal {
+            if signing_in {
+                self.render_sign_in(frame, area);
+            } else if show_terminal {
                 self.render_terminal(frame, area);
             } else {
                 self.terminal_area = Block::bordered().inner(area);
                 self.render_preview(frame, area);
             }
         }
+    }
+
+    fn render_sign_in(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let Some(input) = &self.input else {
+            return;
+        };
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(self.tint.accent())
+            .title(Line::styled(
+                format!(" Sign in · {} ", display(&input.name, 80)),
+                self.tint.heading(),
+            ));
+        let content = if area.width < 3 || area.height < 3 {
+            area
+        } else {
+            let content = block.inner(area);
+            frame.render_widget(block, area);
+            content
+        };
+        self.terminal_area = content;
+        let lines = vec![
+            Line::styled(
+                format!("Remote username: {}▏", display(&input.text, 64)),
+                self.tint.accent(),
+            ),
+            Line::raw(""),
+            Line::raw(if input.lookup.is_some() {
+                "Reading SSH settings…"
+            } else {
+                "Confirm the account name on this computer."
+            }),
+            Line::styled(
+                if input.ssh_user.as_deref() == Some(input.text.as_str()) {
+                    "SSH settings/default; a key does not prove the username."
+                } else {
+                    "Type a username or Ctrl-U to change it."
+                },
+                theme::muted(),
+            ),
+            Line::raw(""),
+            Line::raw("Enter  Confirm and sign in"),
+            Line::raw("Ctrl-U Clear / change username"),
+            Line::raw("Esc    Back"),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content);
     }
 
     fn render_terminal(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -1397,7 +1603,19 @@ impl Picker {
                     "connected"
                 },
             ),
-            None => format!(" {} · sign in ", display(&active.worker.name, 80)),
+            None => format!(
+                " {} · {} · sign in ",
+                display(&active.worker.name, 80),
+                display(
+                    active
+                        .worker
+                        .destination
+                        .as_deref()
+                        .and_then(|destination| destination.rsplit_once('@'))
+                        .map_or("SSH config", |(user, _)| user),
+                    64,
+                ),
+            ),
         };
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -1482,7 +1700,15 @@ impl Picker {
                 ("tmux prefix d", "detach"),
             ]
         } else if self.input.is_some() {
-            &[("enter", "save"), ("esc", "cancel")]
+            if self.input.as_ref().is_some_and(|input| input.connect) {
+                &[
+                    ("enter", "sign in"),
+                    ("ctrl-u", "change username"),
+                    ("esc", "back"),
+                ]
+            } else {
+                &[("enter", "save"), ("esc", "cancel")]
+            }
         } else if self.filtering {
             &[
                 ("type", "to filter"),
@@ -1672,7 +1898,7 @@ impl Picker {
 
     /// Rows are compact (names, plus a short activity age) when the preview is
     /// shown, because the preview carries each session's details.
-    fn render_rows(&self, compact: bool, width: u16) -> Vec<ListItem<'static>> {
+    fn render_rows(&self, compact: bool, width: u16, inactive: bool) -> Vec<ListItem<'static>> {
         let content_width = usize::from(width.saturating_sub(4));
         let name_width = if compact {
             content_width.saturating_sub(8)
@@ -1680,6 +1906,12 @@ impl Picker {
             48
         };
         let tint = self.tint;
+        let (heading, text, secondary) = if inactive {
+            let muted = theme::inactive_sidebar();
+            (muted, muted, muted)
+        } else {
+            (tint.heading(), tint.text(), tint.secondary())
+        };
         let now = (self.services.now)();
         let details = |session: &Session| {
             if compact {
@@ -1736,42 +1968,40 @@ impl Picker {
             .map(|row| {
                 let entry = &self.entries[row.entry];
                 let spans = match row.kind {
-                    RowKind::PinnedHeader => vec![Span::styled("Pinned", tint.heading())],
+                    RowKind::PinnedHeader => vec![Span::styled("Pinned", heading)],
                     RowKind::Group => {
                         let mut spans = vec![Span::styled(
                             fit_name(&entry.worker.name, content_width),
-                            tint.heading(),
+                            heading,
                         )];
                         if let Some(destination) = &entry.worker.destination
                             && !compact
                         {
                             spans.push(Span::styled(
                                 format!("  {}", display(destination, 120)),
-                                tint.secondary(),
+                                secondary,
                             ));
                         }
                         spans
                     }
                     RowKind::Pinned => {
                         let mark = if row.favorite { "★ " } else { "↺ " };
-                        let mut spans = vec![
-                            Span::styled(mark, tint.heading()),
-                            Span::styled(padded(row), tint.text()),
-                        ];
+                        let mut spans =
+                            vec![Span::styled(mark, heading), Span::styled(padded(row), text)];
                         let detail = self.session(row).map(|session| {
-                            Span::styled(format!("  {}", details(session)), tint.secondary())
+                            Span::styled(format!("  {}", details(session)), secondary)
                         });
                         let host = fit_name(&entry.worker.name, host_width);
                         if compact {
                             spans.extend(detail);
-                            spans.push(Span::styled(format!("  {host}"), tint.secondary()));
+                            spans.push(Span::styled(format!("  {host}"), secondary));
                         } else {
                             // Full details vary in length, so the computer comes first.
                             let padding =
                                 host_width.saturating_sub(UnicodeWidthStr::width(host.as_str()));
                             spans.push(Span::styled(
                                 format!("  on {host}{}", " ".repeat(padding)),
-                                tint.secondary(),
+                                secondary,
                             ));
                             spans.extend(detail);
                         }
@@ -1783,14 +2013,11 @@ impl Picker {
                             self.state.is_pinned(&entry.worker.key, &session.name)
                         });
                         let mut spans = vec![
-                            Span::styled(if pinned { "★ " } else { "  " }, tint.heading()),
-                            Span::styled(padded(row), tint.text()),
+                            Span::styled(if pinned { "★ " } else { "  " }, heading),
+                            Span::styled(padded(row), text),
                         ];
                         if let Some(session) = session {
-                            spans.push(Span::styled(
-                                format!("  {}", details(session)),
-                                tint.secondary(),
-                            ));
+                            spans.push(Span::styled(format!("  {}", details(session)), secondary));
                         }
                         spans
                     }
@@ -1818,7 +2045,9 @@ impl Picker {
                                 Status::Unreachable => "unreachable",
                             }
                         };
-                        let style = if offline {
+                        let style = if inactive {
+                            theme::inactive_sidebar()
+                        } else if offline {
                             theme::muted()
                         } else {
                             theme::status(status)
@@ -1826,7 +2055,7 @@ impl Picker {
                         let name_width =
                             content_width.saturating_sub(UnicodeWidthStr::width(status_text) + 4);
                         vec![
-                            Span::styled(fit_name(&entry.worker.name, name_width), tint.heading()),
+                            Span::styled(fit_name(&entry.worker.name, name_width), heading),
                             Span::styled(format!("  {dot} "), style),
                             Span::styled(status_text, style),
                         ]
@@ -2062,16 +2291,16 @@ impl Drop for TerminalGuard {
 /// Clears the screen and returns a terminal whose empty buffers force a full
 /// redraw. `Terminal::clear` would query the cursor position first, which
 /// fails after two seconds on terminals that do not answer that query.
-fn fresh_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
+fn fresh_terminal() -> io::Result<Terminal<TuiBackend<Stdout>>> {
     execute!(io::stdout(), Clear(ClearType::All))?;
-    Terminal::new(CrosstermBackend::new(io::stdout()))
+    Terminal::new(TuiBackend::new(io::stdout()))
 }
 
 fn execute_command(
     command: Command,
     picker: &mut Picker,
     sender: &mpsc::Sender<Message>,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Terminal<TuiBackend<Stdout>>,
     guard: &TerminalGuard,
 ) -> Result<(), String> {
     match command {
@@ -2130,6 +2359,26 @@ fn execute_command(
                 }
             });
         }
+        Command::ResolveUser { worker, cancel } => {
+            let resolve = picker.services.resolve_user.clone();
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let result = resolve(
+                    &cancel,
+                    worker
+                        .destination
+                        .as_deref()
+                        .expect("remote username lookup"),
+                );
+                if !cancel.is_cancelled() {
+                    let _ = sender.send(Message::SshUser {
+                        worker,
+                        cancel,
+                        result,
+                    });
+                }
+            });
+        }
         Command::Launch(choice) => {
             if let Some(session) = &choice.session {
                 // Nesting the local session containing Delux would display itself.
@@ -2167,7 +2416,7 @@ fn execute_command(
             let attachment = crate::ssh_mux::begin_attachment();
             let signing_in = choice.session.is_none();
             let args = match &choice.session {
-                Some(session) => attach_script(session)
+                Some(session) => attach_script(session, true)
                     .map(|script| computer_command(&choice.worker, &script, true, true)),
                 None => Ok(computer_command(
                     &choice.worker,
@@ -2199,7 +2448,7 @@ fn execute_command(
                         _attachment: attachment,
                     });
                     picker.terminal_focused = true;
-                    if signing_in {
+                    if signing_in && picker.notice.is_empty() {
                         picker.notice =
                             "Verify any host fingerprint through a trusted channel.".into();
                     }
@@ -2245,6 +2494,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         }),
         scan: Arc::new(scan),
         preview: Arc::new(preview),
+        resolve_user: Arc::new(crate::app::resolve_ssh_user),
         sharing_active: Box::new(crate::ssh_mux::sharing_active),
         save_mapping: Box::new(move |name, destination| {
             save_host_mapping(&config_path, name, destination)
@@ -2293,13 +2543,9 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         if let Some(command) = picker.update(Message::Tick(Instant::now())) {
             execute_command(command, &mut picker, &sender, &mut terminal, &guard)?;
         }
-        // Present the cells and final cursor together, not the intermediate
-        // paint cursor that Crossterm flushes before restoring its position.
-        execute!(terminal.backend_mut(), BeginSynchronizedUpdate)
+        terminal
+            .draw(|frame| picker.render(frame))
             .map_err(|error| error.to_string())?;
-        let drawn = terminal.draw(|frame| picker.render(frame)).map(|_| ());
-        let presented = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
-        drawn.and(presented).map_err(|error| error.to_string())?;
         let wait = Duration::from_millis(if picker.active.is_some() { 16 } else { 100 })
             .min(Duration::from_millis(120).saturating_sub(tick.elapsed()));
         if event::poll(wait).map_err(|error| error.to_string())? {
@@ -2431,6 +2677,7 @@ mod tests {
                         output: session.output,
                     })
                 }),
+                resolve_user: Arc::new(|_, _| Err("SSH settings unavailable".into())),
                 sharing_active: Box::new(|_| true),
                 save_mapping: Box::new(move |name, destination| {
                     mappings
@@ -2494,6 +2741,17 @@ mod tests {
                         destination: worker.destination,
                         key,
                         session,
+                        result,
+                    })
+                }
+                Command::ResolveUser { worker, cancel } => {
+                    let result = (self.picker.services.resolve_user)(
+                        &cancel,
+                        worker.destination.as_deref().unwrap(),
+                    );
+                    self.picker.update(Message::SshUser {
+                        worker,
+                        cancel,
                         result,
                     })
                 }
@@ -2834,10 +3092,212 @@ mod tests {
         assert!(harness.picker.active.is_none());
         assert!(!harness.picker.terminal_focused && !harness.picker.quit);
         assert_eq!(harness.picker.entries[0].status(), Status::AuthRequired);
-        assert!(matches!(
-            harness.picker.activate(),
-            Some(Command::Launch(Choice { session: None, .. }))
-        ));
+        let command = harness.picker.activate();
+        harness.drive(command);
+        assert!(harness.picker.input.as_ref().unwrap().connect);
+    }
+
+    #[test]
+    fn resolved_ssh_user_preserves_alias_and_settings_until_explicitly_changed() {
+        let worker = remote("box", "box", "ssh-alias");
+        for override_user in [false, true] {
+            let mut harness = Harness::new(
+                vec![worker.clone()],
+                vec![failed(&worker, Status::AuthRequired, "Permission denied")],
+            );
+            harness.picker.services.resolve_user = Arc::new(|_, _| Ok("configured-user".into()));
+            harness.press(&["enter"]);
+            assert_eq!(
+                harness.picker.input.as_ref().unwrap().text,
+                "configured-user"
+            );
+            if override_user {
+                harness
+                    .picker
+                    .key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+                harness.press(&["different-user"]);
+            } else {
+                harness.picker.services.save_mapping = Box::new(|_, _| {
+                    panic!("confirming SSH settings must not rewrite configuration")
+                });
+            }
+            harness.press(&["enter"]);
+            let launched = harness.launched();
+            if override_user {
+                assert_eq!(
+                    launched[0].worker.destination.as_deref(),
+                    Some("different-user@ssh-alias")
+                );
+                assert_eq!(
+                    harness.effects.borrow().mappings,
+                    vec![("box".into(), "different-user@ssh-alias".into())],
+                );
+            } else {
+                assert_eq!(launched[0].worker, worker);
+            }
+        }
+    }
+
+    #[test]
+    fn username_lookup_cannot_overwrite_edits_or_a_reopened_form() {
+        let worker = remote("box", "box", "ssh-alias");
+        let mut harness = Harness::new(
+            vec![worker.clone()],
+            vec![failed(&worker, Status::AuthRequired, "Permission denied")],
+        );
+        let Some(Command::ResolveUser { cancel, .. }) = harness.picker.activate() else {
+            panic!("expected SSH settings lookup");
+        };
+        harness.press(&["enter"]);
+        assert!(harness.launched().is_empty());
+        harness.picker.update(Message::Paste("typed-user".into()));
+        assert!(cancel.is_cancelled());
+        harness.picker.update(Message::SshUser {
+            worker: worker.clone(),
+            cancel,
+            result: Ok("late-user".into()),
+        });
+        assert_eq!(harness.picker.input.as_ref().unwrap().text, "typed-user");
+
+        harness.press(&["esc"]);
+        let Some(Command::ResolveUser { cancel: old, .. }) = harness.picker.activate() else {
+            panic!("expected SSH settings lookup");
+        };
+        harness.press(&["esc"]);
+        assert!(old.is_cancelled());
+        let Some(Command::ResolveUser {
+            cancel: current, ..
+        }) = harness.picker.activate()
+        else {
+            panic!("expected new SSH settings lookup");
+        };
+        harness.picker.update(Message::SshUser {
+            worker: worker.clone(),
+            cancel: old,
+            result: Ok("stale-user".into()),
+        });
+        assert!(harness.picker.input.as_ref().unwrap().text.is_empty());
+        harness.press(&["enter"]);
+        harness.picker.update(Message::SshUser {
+            worker,
+            cancel: current,
+            result: Ok("current-user".into()),
+        });
+        assert_eq!(harness.picker.input.as_ref().unwrap().text, "current-user");
+        assert!(harness.picker.notice.is_empty());
+        harness.press(&["enter"]);
+        assert_eq!(
+            harness.launched()[0].worker.destination.as_deref(),
+            Some("ssh-alias")
+        );
+    }
+
+    #[test]
+    fn failed_ssh_lookup_requires_a_remote_username_before_launch_and_reconciles_results() {
+        let worker = remote("node-1", "box", "box.example");
+        let mut harness = Harness::new(
+            vec![worker.clone()],
+            vec![failed(&worker, Status::AuthRequired, "Permission denied")],
+        );
+        harness.press(&["enter"]);
+        assert!(harness.picker.input.as_ref().unwrap().text.is_empty());
+        harness.press(&["enter"]);
+        assert!(harness.launched().is_empty());
+        assert!(harness.effects.borrow().mappings.is_empty());
+        harness.press(&["remote-user", "enter"]);
+        let launched = harness.launched();
+        assert_eq!(
+            launched[0].worker.destination.as_deref(),
+            Some("remote-user@box.example")
+        );
+        assert!(launched[0].session.is_none());
+        assert_eq!(
+            harness.effects.borrow().mappings,
+            vec![("node-1".into(), "remote-user@box.example".into())],
+        );
+        harness.picker.update(Message::Checked(ready(
+            &launched[0].worker,
+            vec![session("$1", "project")],
+        )));
+        assert_eq!(harness.picker.selected_session().unwrap().1.id, "$1");
+    }
+
+    #[test]
+    fn sign_in_confirms_an_explicit_user_without_requiring_a_config_write() {
+        let worker = remote("box", "box", "remote-user@box.example");
+        let mut harness = Harness::new(
+            vec![worker.clone()],
+            vec![failed(&worker, Status::HostTrust, "Unknown host key")],
+        );
+        harness.picker.services.save_mapping = Box::new(|_, _| Err("read-only config".into()));
+        harness.press(&["enter"]);
+        assert_eq!(harness.picker.input.as_ref().unwrap().text, "remote-user");
+        harness.press(&["enter"]);
+        assert_eq!(
+            harness.launched(),
+            vec![Choice {
+                worker,
+                session: None
+            }]
+        );
+    }
+
+    #[test]
+    fn sign_in_changes_an_explicit_user_and_blocks_unsaved_or_stale_overrides() {
+        let worker = remote("box", "box", "wrong@box.example");
+        let mut harness = Harness::new(
+            vec![worker.clone()],
+            vec![failed(&worker, Status::AuthRequired, "Permission denied")],
+        );
+        harness.press(&["enter"]);
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        harness.press(&["right"]);
+        let save = std::mem::replace(
+            &mut harness.picker.services.save_mapping,
+            Box::new(|_, _| Err("read-only config".into())),
+        );
+        harness.press(&["enter"]);
+        assert!(harness.launched().is_empty());
+        assert_eq!(harness.picker.input.as_ref().unwrap().text, "right");
+        assert_eq!(harness.picker.entries[0].worker, worker);
+        harness.picker.services.save_mapping = save;
+        harness.picker.entries[0].worker.destination = Some("changed.example".into());
+        harness.press(&["enter"]);
+        assert!(harness.effects.borrow().mappings.is_empty());
+        assert!(harness.launched().is_empty());
+        harness.picker.entries[0].worker = worker;
+        harness.press(&["enter"]);
+        assert_eq!(
+            harness.launched()[0].worker.destination.as_deref(),
+            Some("right@box.example"),
+        );
+    }
+
+    #[test]
+    fn sign_in_form_cancels_without_replacing_the_connected_client() {
+        let mut harness = sign_in_harness();
+        harness.picker.active.as_mut().unwrap().session = Some(session("$0", "work"));
+        let started = harness.picker.active.as_ref().unwrap().started;
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.press(&["enter", "another-user"]);
+        for (width, height) in [(120, 30), (70, 40), (40, 12), (2, 2)] {
+            harness.buffer(width, height);
+            assert!(!harness.picker.terminal_visible);
+            assert!(!harness.picker.preview_visible);
+            assert!(harness.picker.terminal_area.width > 0);
+        }
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(harness.picker.input.is_none());
+        assert!(!harness.picker.quit);
+        assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+        assert!(harness.launched().is_empty());
+        assert!(harness.effects.borrow().mappings.is_empty());
     }
 
     #[test]
@@ -3004,8 +3464,8 @@ mod tests {
             "{view}"
         );
         assert!(view.contains("NO SIGNAL"), "{view}");
-        // Enter connects interactively.
-        harness.press(&["enter"]);
+        // Enter asks for the remote username before connecting interactively.
+        harness.press(&["enter", "alice", "enter"]);
         let launched = harness.launched();
         assert_eq!(launched.len(), 1);
         assert_eq!(launched[0].worker.key, "auth");
@@ -3020,7 +3480,7 @@ mod tests {
         );
         // Completion expands the computer without stealing selection while browsing.
         harness.picker.update(Message::Checked(ready(
-            &auth,
+            &launched[0].worker,
             vec![session("$9", "new-work")],
         )));
         assert_eq!(
@@ -3060,7 +3520,7 @@ mod tests {
             "alice@dev: Permission denied (publickey).\nsecond diagnostic",
         );
         let mut harness = Harness::new(vec![worker.clone()], vec![inventory]);
-        harness.press(&["enter"]);
+        harness.press(&["enter", "enter"]);
         let launched = harness.launched();
         assert_eq!(launched.len(), 1);
         assert_eq!(launched[0].worker.key, "dev");
@@ -3372,7 +3832,7 @@ mod tests {
                 "{view}"
             );
             assert!(!view.contains("output of project"), "{view}");
-            harness.press(&["enter"]);
+            harness.press(&["enter", "enter"]);
             assert_eq!(
                 harness.launched(),
                 vec![Choice {
@@ -3550,12 +4010,10 @@ mod tests {
         assert!(harness.effects.borrow().mappings.is_empty());
         assert!(!harness.picker.notice.is_empty());
         assert_eq!(harness.picker.generation, generation);
-        harness.press(&["u", "alice"]);
-        assert!(
-            harness
-                .rendered(120, 20)
-                .contains("SSH user for example-host: alice")
-        );
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        harness.press(&["alice"]);
         harness.press(&["enter"]);
         assert_eq!(
             harness.effects.borrow().mappings,
@@ -3974,6 +4432,9 @@ mod tests {
             name: "box".into(),
             destination: "box".into(),
             text: String::new(),
+            connect: false,
+            ssh_user: None,
+            lookup: None,
         });
         assert!(harness.picker.terminal_mouse_event(event).is_none());
         assert!(harness.picker.update(Message::Mouse(event)).is_none());

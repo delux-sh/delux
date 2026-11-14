@@ -294,7 +294,7 @@ fn identity_condition(session: &Session) -> String {
 }
 
 /// Guard and attach in one synchronous tmux command queue, without a fallback.
-pub fn attach_script(session: &Session) -> Result<String, String> {
+pub fn attach_script(session: &Session, embedded: bool) -> Result<String, String> {
     validate_session(session)?;
     let condition = identity_condition(session);
     let target = format!("{}:", session.id);
@@ -304,6 +304,10 @@ pub fn attach_script(session: &Session) -> Result<String, String> {
     );
     let mut script = String::from(TMUX_PRELUDE);
     script.push_str("exec tmux -u -N -L default");
+    if embedded {
+        // Advertise only what Delux's embedded terminal actually implements.
+        script.push_str(" -T sync");
+    }
     for argument in ["if-shell", "-F", "-t", &target, &condition, &action, &stale] {
         script.push(' ');
         script.push_str(&shell_quote(argument));
@@ -647,7 +651,7 @@ mod tests {
         ] {
             let mut session = sample();
             mutate(&mut session);
-            assert!(attach_script(&session).is_err());
+            assert!(attach_script(&session, false).is_err());
             assert!(switch_script(&session).is_err());
             assert!(preview_script(&session).is_err());
         }
@@ -903,7 +907,7 @@ exit 1
         .unwrap();
         fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
         let marker = root.path().join("server-contacted");
-        let attachment = attach_script(&sample()).unwrap();
+        let attachment = attach_script(&sample(), false).unwrap();
         let switching = switch_script(&sample()).unwrap();
         let preview = preview_script(&sample()).unwrap();
         let env = environment(&[
@@ -1018,7 +1022,7 @@ esac
             ("PATH", root.path().as_os_str()),
             ("TMUX_TMPDIR", root.path().as_os_str()),
         ]);
-        let attachment = attach_script(&sample()).unwrap();
+        let attachment = attach_script(&sample(), false).unwrap();
         let switching = switch_script(&sample()).unwrap();
         let preview = preview_script(&sample()).unwrap();
         for script in [INVENTORY_SCRIPT, &attachment, &switching, &preview] {
@@ -1325,7 +1329,7 @@ esac
             let slave = File::from(slave);
             let mut command = Command::new("/bin/sh");
             command
-                .args(["-c", &attach_script(session).unwrap()])
+                .args(["-c", &attach_script(session, true).unwrap()])
                 .env_clear()
                 .envs(&self.env)
                 .stdin(slave.try_clone().unwrap())
@@ -1593,7 +1597,7 @@ esac
         ] {
             let mut stale = renamed.clone();
             mutate(&mut stale);
-            let result = f.script(&attach_script(&stale).unwrap());
+            let result = f.script(&attach_script(&stale, false).unwrap());
             assert_eq!(result.status, SESSION_CHANGED, "{stale:?}: {result:?}");
             assert!(result.stdout.contains("DELUX_STALE"), "{result:?}");
             let result = f.script(&preview_script(&stale).unwrap());
@@ -1602,13 +1606,16 @@ esac
         }
         assert_eq!(f.session(), renamed);
         let direct = f.tmux(&["attach-session", "-t", &renamed.id]);
-        let guarded = f.script(&attach_script(&renamed).unwrap());
+        let guarded = f.script(&attach_script(&renamed, false).unwrap());
         assert_ne!(direct.status, 0, "{direct:?}");
         assert_eq!(guarded.status, direct.status, "{guarded:?}, {direct:?}");
         f.must_tmux(&["new-session", "-d", "-s", "survivor", "sleep 120"]);
         assert_eq!(f.sessions().len(), 2);
         f.must_tmux(&["kill-session", "-t", &original.id]);
-        assert_ne!(f.script(&attach_script(&original).unwrap()).status, 0);
+        assert_ne!(
+            f.script(&attach_script(&original, false).unwrap()).status,
+            0
+        );
         let preview = f.script(&preview_script(&original).unwrap());
         assert_eq!(preview.status, SESSION_CHANGED, "{preview:?}");
         assert!(preview.stdout.contains("DELUX_STALE"), "{preview:?}");
@@ -1630,7 +1637,7 @@ esac
         assert_eq!(replacement.id, original.id);
         assert_ne!(replacement.server_pid, original.server_pid);
         assert_eq!(
-            f.script(&attach_script(&original).unwrap()).status,
+            f.script(&attach_script(&original, false).unwrap()).status,
             SESSION_CHANGED
         );
         let preview = f.script(&preview_script(&original).unwrap());
@@ -1639,7 +1646,11 @@ esac
         assert_eq!(f.session(), replacement);
         f.must_tmux(&["kill-server"]);
         assert!(f.sessions().is_empty());
-        assert_ne!(f.script(&attach_script(&replacement).unwrap()).status, 0);
+        assert_ne!(
+            f.script(&attach_script(&replacement, false).unwrap())
+                .status,
+            0
+        );
         let preview = f.script(&preview_script(&replacement).unwrap());
         assert_eq!(preview.status, SESSION_CHANGED, "{preview:?}");
         assert!(preview.stdout.contains("DELUX_STALE"), "{preview:?}");

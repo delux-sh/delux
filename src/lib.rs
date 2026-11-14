@@ -16,6 +16,7 @@ mod terminal;
 mod theme;
 mod tmux;
 mod tui;
+mod tui_backend;
 mod workers;
 
 #[cfg(test)]

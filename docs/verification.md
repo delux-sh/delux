@@ -8,6 +8,32 @@ The DCO workflow passed 17 offline cases covering valid and missing author sign-
 
 A native macOS archive built with the GPL grant and retained third-party/toolchain notices; its checksum and contents were verified. Cargo's license metadata and the future Homebrew formula's license and Ruby syntax were checked. Binary distribution and Homebrew remain deferred; packaging smoke artifacts are private and outside the publication tree.
 
+## Sidebar focus contrast
+
+The sidebar uses neutral gray text, borders, status labels, and a subdued selection bar while the terminal or right-panel sign-in form has focus. Returning to the list restores its tint.
+
+The native release build passed. Real-PTY checks verified Tab/Shift-Tab transitions in cyan, green, and amber, plus side-by-side (100×28) and stacked (70×40) layouts. Sidebar colors and the selection highlight changed and restored correctly; the child's red terminal output remained unchanged. Clean exit preserved the session; isolated fixtures were removed.
+
+## Embedded cursor stability
+
+Idle redraws no longer reissue cursor visibility/position commands. Embedded tmux clients request synchronized output; Delux retains a complete cell-and-cursor frame across split reads, with reusable storage and bounded capture work. Unterminated synchronized frames expire after one second. A 50 ms grace period coalesces tmux's unframed cursor-hide prelude; persistent hides still apply, while keyboard handling and sidebar focus remain immediate.
+
+All 21 embedded-terminal tests, three backend regressions, and the live tmux attachment/identity regression passed. Coverage includes silent idle frames, paint-cursor restoration, visibility changes, resize, split DEC 2026 and tmux 3.2 DCS markers, completed frames followed by partial frames, and timeout recovery. Clippy with warnings denied and the native macOS ARM64 release build passed.
+
+The backend clear/redraw regression also passed with disconnected stdin and no controlling terminal. It exercises emitted terminal commands directly rather than requiring CI to supply a physical terminal size; resize remains covered by the embedded-terminal tests and real-PTY checks below.
+
+The cancellation regression verifies that shutdown returns while the runner's registration is still held and that the child receives SIGKILL. It uses a bounded completion signal instead of a 500 ms wall-clock assertion that failed under CI scheduling delays; the focused regression passed.
+
+Isolated real-PTY checks with tmux 3.7b and OMP 18.20.0 verified typing, preserved unsent drafts, Shift-Tab/Tab focus, and resize. OMP typing produced 21 committed updates without cursor hide/show toggles. The final release binary displayed 34 animated updates over two seconds, with deliberately split child frames and no cursor hide/show toggles; input, focus changes, clean exit, and session preservation passed. Fixtures were removed. This verifies terminal output, not physical blink timing in cmux; remote SSH latency and a live tmux 3.2 run were not separately tested.
+
+## Remote username suggestions at sign-in
+
+Interactive sign-in prefills an explicit `user@host` destination or asks OpenSSH (`ssh -G`) to resolve the username asynchronously, including aliases, Includes, and Match rules. The latter is labeled SSH settings/default and requires confirmation, including when SSH falls back to the local account. A key does not identify its remote account. Confirming SSH's suggestion preserves the original destination and does not write a Delux mapping; changing it saves an explicit override. Failed lookups allow manual entry.
+
+All 48 picker tests passed, including unchanged SSH-config preservation, overrides, pending lookup cancellation, stale results, failed persistence, and small layouts. The focused lookup regression passed again after clearing the pending-Enter notice on completion. Formatting, Clippy with warnings denied, and the native macOS ARM64 release build passed.
+
+Real-PTY/loopback OpenSSH checks verified a User supplied by Include and Match final, a different configured account, a key-only alias, and the local fallback without keys. Confirming the configured account preserved the alias, key, port, and unchanged Delux configuration; encrypted-key sign-in, inventory, and session input succeeded without echoing the passphrase. Ctrl-U changed each suggestion. A delayed lookup stayed responsive, cleared its wait notice, and could not overwrite a manual edit. Quitting preserved the fixture session. Fixture processes, keys, and files were removed.
+
 ## Browsing previews while connected
 
 The right panel now follows list selection while retaining the connected PTY in the background. Selecting its own session shows the live terminal; selecting another row shows that row's preview. Tab returns to the connected terminal, while Enter opens the selected session.
