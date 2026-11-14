@@ -120,6 +120,16 @@ pub fn muted_border() -> Style {
     Style::default().fg(Color::DarkGray)
 }
 
+/// Neutral sidebar while input belongs to the right panel.
+pub fn inactive_sidebar() -> Style {
+    Style::default().fg(Color::DarkGray).bg(Color::Reset)
+}
+
+/// Retain the selected row without the active tint's bright highlight.
+pub fn inactive_selection() -> Style {
+    Style::default().fg(Color::Gray).bg(Color::DarkGray)
+}
+
 /// Secondary text outside the tinted selector.
 pub fn muted() -> Style {
     Style::default().add_modifier(Modifier::DIM)

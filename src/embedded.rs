@@ -8,17 +8,73 @@ use std::num::NonZeroU16;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr;
 
 const INPUT_LIMIT: usize = 1024 * 1024;
 const IO_BUDGET: usize = 64 * 1024;
 const IO_CALLS: usize = 32;
+const SYNC_TIMEOUT: Duration = Duration::from_secs(1);
+// tmux can hide the cursor before emitting its synchronized-frame marker.
+const CURSOR_HIDE_GRACE: Duration = Duration::from_millis(50);
+
+#[derive(Default)]
+struct RenderedScreen {
+    buffer: Buffer,
+    cursor: Option<(u16, u16)>,
+    hide_since: Option<Instant>,
+}
+
+impl RenderedScreen {
+    fn capture(&mut self, screen: &vt100::Screen) {
+        let (rows, cols) = screen.size();
+        self.buffer.resize(Rect::new(0, 0, cols.get(), rows.get()));
+        for row in 0..rows.get() {
+            for col in 0..cols.get() {
+                let target = &mut self.buffer[(col, row)];
+                target.reset();
+                let Some(cell) = screen.cell(row, col) else {
+                    continue;
+                };
+                let mut modifiers = Modifier::empty();
+                for (enabled, modifier) in [
+                    (cell.bold(), Modifier::BOLD),
+                    (cell.dim(), Modifier::DIM),
+                    (cell.italic(), Modifier::ITALIC),
+                    (cell.underline(), Modifier::UNDERLINED),
+                    (cell.inverse(), Modifier::REVERSED),
+                ] {
+                    if enabled {
+                        modifiers.insert(modifier);
+                    }
+                }
+                target.set_style(
+                    Style::default()
+                        .fg(color(cell.fgcolor()))
+                        .bg(color(cell.bgcolor()))
+                        .add_modifier(modifiers),
+                );
+                // Reset continuation cells, including stale wide characters.
+                if cell.has_contents()
+                    && !cell.is_wide_continuation()
+                    && (!cell.is_wide() || col + 1 < cols.get())
+                {
+                    target.set_symbol(cell.contents());
+                }
+            }
+        }
+        self.cursor = (!screen.hide_cursor()).then(|| screen.cursor_position());
+        self.hide_since = None;
+    }
+}
 
 /// Small escape sequences are formatted on the stack, including query replies.
 struct Sequence {
@@ -54,9 +110,30 @@ struct Replies {
     // Input and replies share one FIFO, preserving ordering and a single bound.
     pending: VecDeque<u8>,
     overflow: bool,
+    synchronized: Option<Instant>,
+    display: RenderedScreen,
+    captured_frame: bool,
 }
 
 impl Replies {
+    fn synchronizing(&self) -> bool {
+        self.synchronized
+            .is_some_and(|started| started.elapsed() < SYNC_TIMEOUT)
+    }
+
+    fn set_synchronized(&mut self, enabled: bool, screen: &vt100::Screen) {
+        if enabled {
+            // Repeated begins must not postpone the safety deadline.
+            self.synchronized.get_or_insert_with(Instant::now);
+        } else if self.synchronized.take().is_some() && !self.captured_frame {
+            // Keep a complete frame even if another begins in the same read.
+            // Bound capture work: a stream of tiny frames must not multiply
+            // the PTY read budget by thousands of whole-screen copies.
+            self.display.capture(screen);
+            self.captured_frame = true;
+        }
+    }
+
     fn enqueue(&mut self, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() > INPUT_LIMIT.saturating_sub(self.pending.len()) {
             return Err(io::Error::new(
@@ -96,6 +173,24 @@ impl vt100::Callbacks for Replies {
         params: &[&[u16]],
         command: char,
     ) {
+        if i1 == Some(b'?') {
+            if i2 == Some(b'$') && command == 'p' && params == [&[2026][..]] {
+                self.reply(if self.synchronizing() {
+                    b"\x1b[?2026;1$y"
+                } else {
+                    b"\x1b[?2026;2$y"
+                });
+                return;
+            }
+            if i2.is_none() && params.iter().any(|p| *p == [2026]) {
+                match command {
+                    'h' => self.set_synchronized(true, screen),
+                    'l' => self.set_synchronized(false, screen),
+                    _ => {}
+                }
+                return;
+            }
+        }
         if i2.is_some() || params.len() > 1 || params.iter().any(|p| p.len() > 1) {
             return;
         }
@@ -134,10 +229,40 @@ struct CapturedOutput {
     bytes: Vec<u8>,
 }
 
+// tmux 3.2 uses DCS =1s/=2s rather than DEC 2026. vt100 ignores DCS, so
+// recognize these exact markers across reads without buffering their payload.
+#[derive(Default)]
+struct DcsSync {
+    matched: u8,
+    enabled: bool,
+}
+
+impl DcsSync {
+    fn feed(&mut self, byte: u8) -> Option<bool> {
+        match (self.matched, byte) {
+            (0, 0x1b) | (1, b'P') | (2, b'=') | (4, b's') | (5, 0x1b) => {
+                self.matched += 1;
+            }
+            (3, b'1' | b'2') => {
+                self.enabled = byte == b'1';
+                self.matched += 1;
+            }
+            (6, b'\\') => {
+                self.matched = 0;
+                return Some(self.enabled);
+            }
+            _ => self.matched = u8::from(byte == 0x1b),
+        }
+        None
+    }
+}
+
 pub(crate) struct EmbeddedTerminal {
     master: Option<OwnedFd>,
     child: Option<Child>,
     parser: vt100::Parser<Replies>,
+    dcs_sync: DcsSync,
+    display_dirty: bool,
     exit_status: Option<i32>,
     eof: bool,
     output: Option<CapturedOutput>,
@@ -198,6 +323,8 @@ impl EmbeddedTerminal {
             master: Some(master),
             child: Some(child),
             parser: vt100::Parser::new_with_callbacks(rows, cols, 0, Replies::default()),
+            dcs_sync: DcsSync::default(),
+            display_dirty: true,
             exit_status: None,
             eof: false,
             output,
@@ -301,6 +428,21 @@ impl EmbeddedTerminal {
         })
     }
 
+    fn process_output(&mut self, bytes: &[u8]) {
+        self.parser.callbacks_mut().captured_frame = false;
+        let mut start = 0;
+        for (index, &byte) in bytes.iter().enumerate() {
+            if let Some(enabled) = self.dcs_sync.feed(byte) {
+                self.parser.process(&bytes[start..=index]);
+                let (screen, callbacks) = self.parser.screen_and_callbacks_mut();
+                callbacks.set_synchronized(enabled, screen);
+                start = index + 1;
+            }
+        }
+        self.parser.process(&bytes[start..]);
+        self.display_dirty = true;
+    }
+
     fn read_output(&mut self) -> io::Result<()> {
         if self.eof {
             return Ok(());
@@ -313,7 +455,7 @@ impl EmbeddedTerminal {
                 unsafe { libc::read(self.master_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
             if count > 0 {
                 let count = count as usize;
-                self.parser.process(&buffer[..count]);
+                self.process_output(&buffer[..count]);
                 if self.parser.callbacks().overflow {
                     return Err(io::Error::new(
                         io::ErrorKind::WouldBlock,
@@ -403,6 +545,8 @@ impl EmbeddedTerminal {
             return Err(io::Error::last_os_error());
         }
         self.parser.set_size(rows, cols);
+        self.parser.callbacks_mut().synchronized = None;
+        self.display_dirty = true;
         Ok(())
     }
 
@@ -520,47 +664,47 @@ impl EmbeddedTerminal {
         self.flush_input()
     }
 
-    pub(crate) fn render(&self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
+    fn refresh_display(&mut self) {
+        if !self.display_dirty || self.parser.callbacks().synchronizing() {
+            return;
+        }
+        let (screen, callbacks) = self.parser.screen_and_callbacks_mut();
+        if screen.hide_cursor() && callbacks.display.cursor.is_some() {
+            let since = callbacks
+                .display
+                .hide_since
+                .get_or_insert_with(Instant::now);
+            if since.elapsed() < CURSOR_HIDE_GRACE {
+                return;
+            }
+        }
+        callbacks.display.capture(screen);
+        self.display_dirty = false;
+    }
+
+    pub(crate) fn render(&mut self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
+        self.refresh_display();
+        let display = &self.parser.callbacks().display;
         let area = area.intersection(frame.area());
-        let screen = self.parser.screen();
         let buffer = frame.buffer_mut();
         for row in 0..area.height {
             for col in 0..area.width {
                 let target = &mut buffer[(area.x + col, area.y + row)];
-                target.reset();
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                let mut modifiers = Modifier::empty();
-                for (enabled, modifier) in [
-                    (cell.bold(), Modifier::BOLD),
-                    (cell.dim(), Modifier::DIM),
-                    (cell.italic(), Modifier::ITALIC),
-                    (cell.underline(), Modifier::UNDERLINED),
-                    (cell.inverse(), Modifier::REVERSED),
-                ] {
-                    if enabled {
-                        modifiers.insert(modifier);
+                if let Some(cell) = display.buffer.cell((col, row)) {
+                    target.clone_from(cell);
+                    if col + 1 == area.width && target.symbol().width() > 1 {
+                        target.set_symbol(" ");
                     }
-                }
-                target.set_style(
-                    Style::default()
-                        .fg(color(cell.fgcolor()))
-                        .bg(color(cell.bgcolor()))
-                        .add_modifier(modifiers),
-                );
-                // Ratatui's diff understands the width of the leading cell.
-                // Reset continuation cells, including stale wide characters.
-                if cell.has_contents()
-                    && !cell.is_wide_continuation()
-                    && (!cell.is_wide() || col + 1 < area.width)
-                {
-                    target.set_symbol(cell.contents());
+                } else {
+                    target.reset();
                 }
             }
         }
-        let (row, col) = screen.cursor_position();
-        if focused && !screen.hide_cursor() && row < area.height && col < area.width {
+        if focused
+            && let Some((row, col)) = display.cursor
+            && row < area.height
+            && col < area.width
+        {
             frame.set_cursor_position((area.x + col, area.y + row));
         }
     }
@@ -855,7 +999,7 @@ mod tests {
     fn unicode_attributes_alternate_screen_and_cursor_render_as_cells() {
         let _env = crate::test_support::env_read();
         let mut terminal = shell("sleep 30", 3, 10);
-        terminal.parser.process(
+        terminal.process_output(
             "normal\x1b[?1049h\x1b[2J\x1b[H\x1b[1;3;4;38;2;12;34;56;48;5;123m界e\u{301}".as_bytes(),
         );
         let mut display = Terminal::new(TestBackend::new(10, 3)).unwrap();
@@ -884,16 +1028,144 @@ mod tests {
             })
             .unwrap();
         assert!(!display.backend().cursor_visible());
-        terminal.parser.process(b"\x1b[?25l");
-        display
-            .draw(|frame| {
-                let area = frame.area();
-                terminal.render(frame, area, true);
-            })
-            .unwrap();
-        assert!(!display.backend().cursor_visible());
-        terminal.parser.process(b"\x1b[?1049l");
+        terminal.process_output(b"\x1b[?1049l");
         assert_eq!(terminal.parser.screen().contents(), "normal");
+    }
+
+    #[test]
+    fn synchronized_output_keeps_cells_and_cursor_until_frame_end() {
+        let _env = crate::test_support::env_read();
+        let mut terminal = shell("sleep 30", 3, 10);
+        let mut display = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        let render = |terminal: &mut EmbeddedTerminal, display: &mut Terminal<TestBackend>| {
+            display
+                .draw(|frame| terminal.render(frame, frame.area(), true))
+                .unwrap();
+        };
+        terminal.process_output(b"old");
+        render(&mut terminal, &mut display);
+        terminal.process_output(b"\x1b[?20");
+        terminal.process_output(b"26h\x1b[?25l\x1b[Hnew\x1b[?2026$p");
+        assert_eq!(terminal.parser.screen().contents(), "new");
+        assert_eq!(
+            terminal
+                .parser
+                .callbacks_mut()
+                .pending
+                .drain(..)
+                .collect::<Vec<_>>(),
+            b"\x1b[?2026;1$y"
+        );
+        render(&mut terminal, &mut display);
+        assert_eq!(display.backend().buffer()[(0, 0)].symbol(), "o");
+        assert!(display.backend().cursor_visible());
+        assert_eq!(display.backend().cursor_position(), (3, 0).into());
+
+        terminal.process_output(b"\x1b[2;3H\x1b[?25h\x1b[?2026l\x1b[?2026$p");
+        render(&mut terminal, &mut display);
+        assert_eq!(display.backend().buffer()[(0, 0)].symbol(), "n");
+        assert!(display.backend().cursor_visible());
+        assert_eq!(display.backend().cursor_position(), (2, 1).into());
+        assert_eq!(
+            terminal
+                .parser
+                .callbacks_mut()
+                .pending
+                .drain(..)
+                .collect::<Vec<_>>(),
+            b"\x1b[?2026;2$y"
+        );
+    }
+
+    #[test]
+    fn synchronized_output_timeout_and_resize_do_not_leave_a_frozen_pane() {
+        let _env = crate::test_support::env_read();
+        let mut terminal = shell("sleep 30", 3, 10);
+        let mut display = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        terminal.process_output(b"\x1b[?2026h\x1b[?25lnew");
+        terminal.parser.callbacks_mut().synchronized = Some(Instant::now() - SYNC_TIMEOUT);
+        terminal.process_output(b"\x1b[?2026h");
+        display
+            .draw(|frame| terminal.render(frame, frame.area(), true))
+            .unwrap();
+        assert_eq!(display.backend().buffer()[(0, 0)].symbol(), "n");
+        assert!(!display.backend().cursor_visible());
+
+        terminal.process_output(b"\x1b[?2026l\x1b[?2026h\x1b[Hresized\x1b[?25h");
+        terminal.resize(4, 12).unwrap();
+        display
+            .draw(|frame| terminal.render(frame, frame.area(), true))
+            .unwrap();
+        assert_eq!(display.backend().buffer()[(0, 0)].symbol(), "r");
+        assert!(display.backend().cursor_visible());
+        assert_eq!(display.backend().cursor_position(), (7, 0).into());
+    }
+
+    #[test]
+    fn synchronized_output_accepts_split_tmux_dcs_markers() {
+        let _env = crate::test_support::env_read();
+        let mut terminal = shell("sleep 30", 3, 10);
+        terminal.process_output(b"old");
+        terminal.refresh_display();
+        for byte in b"\x1bP=1s\x1b\\" {
+            terminal.process_output(&[*byte]);
+        }
+        terminal.process_output(b"\x1b[?25l\x1b[Hnew");
+        terminal.refresh_display();
+        assert_eq!(
+            terminal.parser.callbacks().display.buffer[(0, 0)].symbol(),
+            "o"
+        );
+        assert_eq!(terminal.parser.callbacks().display.cursor, Some((0, 3)));
+        for byte in b"\x1b[?25h\x1bP=2s\x1b\\" {
+            terminal.process_output(&[*byte]);
+        }
+        terminal.refresh_display();
+        assert_eq!(
+            terminal.parser.callbacks().display.buffer[(0, 0)].symbol(),
+            "n"
+        );
+        assert_eq!(terminal.parser.callbacks().display.cursor, Some((0, 3)));
+
+        // Mixed markers in a single read retain their wire order.
+        terminal.process_output(b"\x1bP=1s\x1b\\\x1b[?2026l");
+        assert!(!terminal.parser.callbacks().synchronizing());
+        terminal.process_output(b"\x1b[?2026h\x1bP=2s\x1b\\");
+        assert!(!terminal.parser.callbacks().synchronizing());
+    }
+
+    #[test]
+    fn cursor_preludes_coalesce_without_losing_completed_frames_or_real_hides() {
+        let _env = crate::test_support::env_read();
+        let mut terminal = shell("sleep 30", 3, 10);
+        let mut display = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        let render = |terminal: &mut EmbeddedTerminal, display: &mut Terminal<TestBackend>| {
+            display
+                .draw(|frame| terminal.render(frame, frame.area(), true))
+                .unwrap();
+        };
+        terminal.process_output(b"old");
+        render(&mut terminal, &mut display);
+        terminal.process_output(b"\x1b[?25l");
+        render(&mut terminal, &mut display);
+        assert!(display.backend().cursor_visible());
+        assert_eq!(display.backend().cursor_position(), (3, 0).into());
+
+        terminal.process_output(
+            b"\x1b[?2026h\x1b[Hnew\x1b[?25h\x1b[?2026l\x1b[?25l\x1b[?2026h\x1b[Hpartial",
+        );
+        render(&mut terminal, &mut display);
+        assert_eq!(display.backend().buffer()[(0, 0)].symbol(), "n");
+        assert!(display.backend().cursor_visible());
+        terminal.process_output(b"\x1b[?25h\x1b[?2026l\x1b[?25l");
+        render(&mut terminal, &mut display);
+        assert_eq!(display.backend().buffer()[(0, 0)].symbol(), "p");
+        assert!(display.backend().cursor_visible());
+
+        terminal.parser.callbacks_mut().display.hide_since =
+            Some(Instant::now() - CURSOR_HIDE_GRACE);
+        render(&mut terminal, &mut display);
+        assert!(!display.backend().cursor_visible());
     }
 
     #[test]
@@ -1383,7 +1655,7 @@ mod tests {
     fn oversized_paste_is_rejected_without_partial_framing() {
         let _env = crate::test_support::env_read();
         let mut terminal = shell("sleep 30", 3, 20);
-        terminal.parser.process(b"\x1b[?2004h");
+        terminal.process_output(b"\x1b[?2004h");
         let error = terminal.paste(&"x".repeat(INPUT_LIMIT)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(terminal.parser.callbacks().pending.is_empty());

@@ -51,11 +51,11 @@ If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--
 | `r` | Rescan |
 | `q` | Quit |
 
-With the terminal focused, typing goes to the session. Use `shift-tab` before picker commands. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
+When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 
 Scroll with the pointer over the focused panel. For tmux scrollback, run `tmux set -g mouse on` on the session's computer, or use copy mode (usually Ctrl-B, then `[`). The list also supports wheel navigation.
 
-**Sign in** and **Trust key** open SSH prompts in the right panel. Passwords stay hidden; Ctrl-C there cancels sign-in. Verify host-key fingerprints before accepting them.
+**Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
 
 ### A few boundaries
 

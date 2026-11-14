@@ -130,6 +130,28 @@ pub(crate) fn computer_command(
     }
 }
 
+/// Ask OpenSSH to resolve aliases, Includes and Match rules without connecting.
+pub(crate) fn resolve_ssh_user(cancel: &Cancel, destination: &str) -> Result<String, String> {
+    crate::workers::validate_destination(destination)?;
+    let args = ["ssh", "-G", "--", destination].map(str::to_owned);
+    let result = run_command(cancel, &args, Duration::from_secs(5), false)
+        .map_err(|error| error.to_string())?;
+    if result.code != 0 {
+        return Err(format!(
+            "SSH settings lookup exited {}: {}",
+            result.code,
+            display(result.stderr.trim(), 300),
+        ));
+    }
+    result
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("user "))
+        .filter(|user| !user.is_empty() && !user.chars().any(char::is_control))
+        .map(str::to_owned)
+        .ok_or_else(|| "SSH settings did not provide a username.".into())
+}
+
 fn run_computer_command(
     cancel: &Cancel,
     worker: &Worker,
@@ -349,7 +371,7 @@ pub fn attach(
     let script = if switching {
         switch_script(session)?
     } else {
-        attach_script(session)?
+        attach_script(session, false)?
     };
     let state =
         terminal_state(libc::STDIN_FILENO).ok_or_else(|| io::Error::last_os_error().to_string())?;
