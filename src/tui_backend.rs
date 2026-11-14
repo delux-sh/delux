@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_only_changes_and_resize_reach_the_terminal() {
+    fn cursor_only_changes_and_clearing_reach_the_terminal() {
         let output = Output::default();
         let mut terminal = terminal(&output);
         let mut parser = vt100::Parser::new(5.try_into().unwrap(), 20.try_into().unwrap(), 0);
@@ -227,10 +227,10 @@ mod tests {
                 assert_eq!(parser.screen().cursor_position(), (y, x));
             }
         }
-        terminal.resize(Rect::new(0, 0, 18, 4)).unwrap();
-        draw(&mut terminal, "resized", Some((2, 1)));
+        terminal.backend_mut().clear_region(ClearType::All).unwrap();
+        draw(&mut terminal, "cleared", Some((2, 1)));
         parser.process(&output.0.borrow());
-        assert_eq!(parser.screen().contents().trim_end(), "resized");
+        assert_eq!(parser.screen().contents().trim_end(), "cleared");
         assert_eq!(parser.screen().cursor_position(), (1, 2));
         assert!(!parser.screen().hide_cursor());
     }

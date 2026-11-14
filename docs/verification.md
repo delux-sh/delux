@@ -20,6 +20,8 @@ Idle redraws no longer reissue cursor visibility/position commands. Embedded tmu
 
 All 21 embedded-terminal tests, three backend regressions, and the live tmux attachment/identity regression passed. Coverage includes silent idle frames, paint-cursor restoration, visibility changes, resize, split DEC 2026 and tmux 3.2 DCS markers, completed frames followed by partial frames, and timeout recovery. Clippy with warnings denied and the native macOS ARM64 release build passed.
 
+The backend clear/redraw regression also passed with disconnected stdin and no controlling terminal. It exercises emitted terminal commands directly rather than requiring CI to supply a physical terminal size; resize remains covered by the embedded-terminal tests and real-PTY checks below.
+
 Isolated real-PTY checks with tmux 3.7b and OMP 18.20.0 verified typing, preserved unsent drafts, Shift-Tab/Tab focus, and resize. OMP typing produced 21 committed updates without cursor hide/show toggles. The final release binary displayed 34 animated updates over two seconds, with deliberately split child frames and no cursor hide/show toggles; input, focus changes, clean exit, and session preservation passed. Fixtures were removed. This verifies terminal output, not physical blink timing in cmux; remote SSH latency and a live tmux 3.2 run were not separately tested.
 
 ## Remote username suggestions at sign-in
