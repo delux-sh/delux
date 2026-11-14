@@ -14,9 +14,10 @@ use crate::cancel::Cancel;
 use crate::display::display;
 use crate::embedded::EmbeddedTerminal;
 use crate::exit_codes;
+use crate::session_form::SessionForm;
 use crate::state::{State, StateChange};
 use crate::theme::Tint;
-use crate::tmux::{AgentState, AgentStatusRow, Session};
+use crate::tmux::{AgentState, AgentStatusRow, NewSession, Session};
 use crate::workers::Worker;
 
 mod drawing;
@@ -266,6 +267,10 @@ enum Message {
         session: Session,
         result: Result<crate::tmux::Preview, (Status, String)>,
     },
+    Created {
+        worker: Worker,
+        result: Result<(Session, Vec<Session>), (Status, String)>,
+    },
     Attached(Result<AttachOutcome, String>),
     Checked(Inventory),
     Spinner,
@@ -299,6 +304,11 @@ enum Command {
         session: Session,
         cancel: Cancel,
     },
+    Create {
+        worker: Worker,
+        request: NewSession,
+        cancel: Cancel,
+    },
     Launch(Choice),
 }
 
@@ -320,6 +330,8 @@ struct Picker {
     filter: String,
     filtering: bool,
     input: Option<UserInput>,
+    creation: Option<SessionForm>,
+    creation_pending: Option<Cancel>,
     rows: Vec<Row>,
     cursor: Option<usize>,
     list_state: ListState,
@@ -374,6 +386,8 @@ impl Picker {
             filter: String::new(),
             filtering: false,
             input: None,
+            creation: None,
+            creation_pending: None,
             rows: Vec::new(),
             cursor: None,
             list_state: ListState::default(),
@@ -634,6 +648,63 @@ impl Picker {
                     },
                 );
             }
+            Message::Created { worker, result } => {
+                let pending = self.creation_pending.take()?;
+                if pending.is_cancelled() {
+                    self.notice = "Creation stopped; it may already exist. Rescanning.".into();
+                    return Some(self.rescan(false));
+                }
+                let Some(entry) = self.entries.iter_mut().find(|entry| {
+                    entry.worker.key == worker.key && entry.worker.destination == worker.destination
+                }) else {
+                    self.creation = None;
+                    self.notice = "Computer changed; rescan before trying creation again.".into();
+                    return Some(self.rescan(false));
+                };
+                match result {
+                    Ok((session, sessions)) => {
+                        entry.update_inventory(
+                            Inventory {
+                                worker: worker.clone(),
+                                sessions,
+                                status: Status::Ready,
+                                detail: String::new(),
+                            },
+                            false,
+                        );
+                        self.creation = None;
+                        self.show_session(&worker.key, &session.id);
+                        self.notice.clear();
+                        return Some(Command::Launch(Choice {
+                            worker,
+                            session: Some(session),
+                        }));
+                    }
+                    Err((status, detail)) => {
+                        let needs_sign_in = worker.destination.is_some()
+                            && matches!(status, Status::AuthRequired | Status::HostTrust);
+                        if needs_sign_in {
+                            entry.inventory = Some(Inventory {
+                                worker,
+                                sessions: Vec::new(),
+                                status,
+                                detail: detail.clone(),
+                            });
+                        }
+                        if let Some(form) = &mut self.creation {
+                            form.busy = false;
+                            form.error = display(&detail, 600);
+                            if needs_sign_in {
+                                form.error
+                                    .push_str(" Esc to return, then Enter to sign in.");
+                            }
+                        }
+                        self.rebuild();
+                        // A failed response cannot prove the remote mutation did not commit.
+                        return Some(self.rescan(false));
+                    }
+                }
+            }
             Message::Attached(result) => {
                 self.active = None;
                 self.terminal_focused = false;
@@ -758,7 +829,7 @@ impl Picker {
     /// Fetches the selected session's preview once the selection has rested,
     /// and refreshes it while it stays selected. Only one fetch runs at a time.
     fn preview_tick(&mut self, now: Instant) -> Option<Command> {
-        let previewing = self.preview_visible && !self.shows_terminal();
+        let previewing = self.creation.is_none() && self.preview_visible && !self.shows_terminal();
         if previewing && self.selection != self.screen_selection {
             self.screen_selection = self.selection.clone();
             self.static_until = Some(now + SELECTION_STATIC);
@@ -1042,9 +1113,7 @@ impl Picker {
         match entry.status() {
             Status::Scanning => self.notice = format!("Still probing {name}…"),
             Status::Ready => {
-                self.notice = format!(
-                    "{name} has no tmux sessions yet; start one there with `tmux new -s NAME`."
-                );
+                self.start_creation();
             }
             _ if worker.destination.is_some() => {
                 if self

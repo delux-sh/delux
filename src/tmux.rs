@@ -82,6 +82,47 @@ pub struct Session {
     pub agent: Option<AgentStatus>,
 }
 
+/// Explicit session creation; directory expansion is limited to the target HOME.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewSession {
+    pub name: String,
+    pub directory: String,
+    pub command: String,
+}
+
+impl NewSession {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("Enter a session name".into());
+        }
+        if self.name.chars().count() > 64
+            || self
+                .name
+                .chars()
+                .any(|c| c.is_control() || c == '.' || c == ':')
+        {
+            return Err(
+                "Session names must be at most 64 characters, without controls, '.' or ':'".into(),
+            );
+        }
+        for (label, value) in [("Directory", &self.directory), ("Command", &self.command)] {
+            if value.chars().count() > 4096 || value.chars().any(char::is_control) {
+                return Err(format!(
+                    "{label} must be at most 4096 characters without controls"
+                ));
+            }
+        }
+        if !self.directory.is_empty()
+            && self.directory != "~"
+            && !self.directory.starts_with("~/")
+            && !self.directory.starts_with('/')
+        {
+            return Err("Directory must be an absolute path, ~, or ~/path".into());
+        }
+        Ok(())
+    }
+}
+
 // -N was added in tmux 3.2. Probe it without connecting to a server; checking
 // capability also accepts development and vendor version strings.
 macro_rules! version_prelude {
@@ -424,6 +465,98 @@ pub fn shell_quote(value: &str) -> String {
         return value.to_owned();
     }
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+// tmux's argv parser treats a trailing semicolon as a command separator even
+// when the surrounding shell quoted it. Escape that separate parsing layer.
+fn creation_argument(value: &str) -> String {
+    match value.strip_suffix(';') {
+        Some(prefix) => shell_quote(&format!("{prefix}\\;")),
+        None => shell_quote(value),
+    }
+}
+
+/// Create once, capturing the identity directly from new-session, then inventory.
+pub fn create_script(request: &NewSession) -> Result<String, String> {
+    request.validate()?;
+    let mut script = String::from(TMUX_PRELUDE);
+    // Check encoding tools before the first possible mutation.
+    script.push_str(encoding_prelude!());
+    script.push_str("directory=");
+    script.push_str(&shell_quote(&request.directory));
+    script.push_str(
+        r#"
+case "$directory" in
+    ''|'~') directory=$HOME ;;
+    '~/'*) directory=$HOME/${directory#??} ;;
+esac
+case "$directory" in
+    /*) ;;
+    *) printf '%s\n' 'The target computer HOME is not an absolute directory.' >&2; exit 1 ;;
+esac
+# Use the client's cwd, not -c: tmux expands formats in -c, including #(jobs).
+# cd validates the directory before starting a server or creating a session.
+if ! CDPATH= cd "$directory" 2>/dev/null; then
+    printf '%s\n' 'The requested directory does not exist or is not accessible.' >&2
+    exit 1
+fi
+created=$(command tmux -u -L default new-session -d -P -F '#{session_id} #{pid} #{start_time} #{session_created}' -s "#,
+    );
+    // Session names also undergo tmux format expansion.
+    script.push_str(&creation_argument(&request.name.replace('#', "##")));
+    script.push_str(" --");
+    if !request.command.is_empty() {
+        script.push(' ');
+        script.push_str(&creation_argument(&request.command));
+    }
+    script.push_str(
+        ") || exit $?\n\
+         printf '%s\\n' 'DELUX_CREATED_1' \"$created\"\n",
+    );
+    script.push_str(INVENTORY_SCRIPT);
+    Ok(script)
+}
+
+/// Never resolve a creation by name: it may already have exited and been replaced.
+pub fn parse_created_session(output: &str) -> Result<(Session, Vec<Session>), String> {
+    let invalid = || "Malformed or truncated tmux creation result".to_owned();
+    let rest = output
+        .strip_prefix("DELUX_CREATED_1\n")
+        .ok_or_else(invalid)?;
+    let (identity, inventory) = rest.split_once('\n').ok_or_else(invalid)?;
+    let mut fields = identity.split(' ');
+    let id = fields.next().ok_or_else(invalid)?;
+    let mut number = || {
+        let value = fields.next().ok_or_else(invalid)?;
+        if !tmux_digits(value) {
+            return Err(invalid());
+        }
+        value.parse::<i64>().map_err(|_| invalid())
+    };
+    let pid = number()?;
+    let start = number()?;
+    let created = number()?;
+    if fields.next().is_some()
+        || !id.strip_prefix('$').is_some_and(tmux_digits)
+        || pid < 1
+        || start < 1
+        || created < 1
+    {
+        return Err(invalid());
+    }
+    let sessions = parse_inventory(inventory)?;
+    let session = sessions
+        .iter()
+        .find(|session| {
+            session.id == id
+                && session.server_pid == pid
+                && session.server_start == start
+                && session.created == created
+        })
+        .ok_or_else(|| {
+            "The created session already ended or changed; its command may have exited".to_owned()
+        })?;
+    Ok((session.clone(), sessions))
 }
 
 // Session IDs are monotonic within a server. Do not add session_created here:
@@ -886,6 +1019,96 @@ mod tests {
         for value in ["garbage", "working 0", "waiting  1", "done\t9", "done 1\r"] {
             let output = format!("DELUX_STATUS_2\n1 2 $0 1 {value}\nDELUX_END\n");
             assert_eq!(parse_status(&output).unwrap()[0].agent, None);
+        }
+    }
+
+    #[test]
+    fn creation_result_requires_one_complete_frame_and_matching_lifetime() {
+        let created = sample();
+        let identity = format!(
+            "{} {} {} {}",
+            created.id, created.server_pid, created.server_start, created.created
+        );
+        let inventory = frame(std::slice::from_ref(&created));
+        let complete = format!("DELUX_CREATED_1\n{identity}\n{inventory}");
+        assert_eq!(
+            parse_created_session(&complete),
+            Ok((created.clone(), vec![created.clone()]))
+        );
+        for invalid in [
+            String::new(),
+            format!("banner\n{complete}"),
+            format!("{complete}{complete}"),
+            format!("{complete}trailer\n"),
+            format!("DELUX_CREATED_1\n{identity}\n"),
+            format!("DELUX_CREATED_1\n{identity} extra\n{inventory}"),
+            format!("DELUX_CREATED_1\n$7 0 1700000000 1700000001\n{inventory}"),
+            format!("DELUX_CREATED_1\n$7 +1234 1700000000 1700000001\n{inventory}"),
+        ] {
+            assert!(parse_created_session(&invalid).is_err(), "{invalid:?}");
+        }
+        for field in 0..4 {
+            let mut replacement = created.clone();
+            match field {
+                0 => replacement.id = "$8".into(),
+                1 => replacement.server_pid += 1,
+                2 => replacement.server_start += 1,
+                _ => replacement.created += 1,
+            }
+            let replaced = format!("DELUX_CREATED_1\n{identity}\n{}", frame(&[replacement]));
+            assert!(parse_created_session(&replaced).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn new_session_validates_names_paths_and_commands() {
+        let valid = NewSession {
+            name: "雪 ; '$HOME' #{pid}".into(),
+            directory: "~/literal $HOME".into(),
+            command: "printf '%s' \"ready\"; exec sleep 120".into(),
+        };
+        assert!(valid.validate().is_ok());
+        for name in [
+            "",
+            " \t",
+            "name.part",
+            "name:part",
+            "bad\nname",
+            "bad\u{7f}",
+        ] {
+            let mut request = valid.clone();
+            request.name = name.into();
+            assert!(request.validate().is_err(), "{name:?}");
+        }
+        for directory in ["relative", "~someone", "$HOME", "~/bad\npath"] {
+            let mut request = valid.clone();
+            request.directory = directory.into();
+            assert!(request.validate().is_err(), "{directory:?}");
+        }
+        for directory in ["", "~", "~/project", "/tmp/literal #{pid};"] {
+            let mut request = valid.clone();
+            request.directory = directory.into();
+            assert!(request.validate().is_ok(), "{directory:?}");
+        }
+        let mut request = valid.clone();
+        request.name = "雪".repeat(64);
+        assert!(request.validate().is_ok());
+        request.name.push('a');
+        assert!(request.validate().is_err());
+        for field in [0, 1] {
+            let mut request = valid.clone();
+            let value = if field == 0 {
+                &mut request.directory
+            } else {
+                &mut request.command
+            };
+            *value = format!("/{}", "a".repeat(4096));
+            assert!(request.validate().is_err());
+        }
+        for command in ["bad\0command", "bad\rcommand", "bad\u{1b}command"] {
+            let mut request = valid.clone();
+            request.command = command.into();
+            assert!(request.validate().is_err());
         }
     }
 
@@ -1895,6 +2118,154 @@ esac
                 "output did not advance: {preview:?}"
             );
             thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn creation_rejects_duplicate_and_invalid_directory_without_mutation() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else {
+            return;
+        };
+        let original = f.session();
+        let marker = f._temp.path().join("unexpected-command");
+        let mut request = NewSession {
+            name: original.name.clone(),
+            directory: f._temp.path().to_str().unwrap().into(),
+            command: format!(
+                "touch {}; exec sleep 120",
+                shell_quote(marker.to_str().unwrap())
+            ),
+        };
+        let duplicate = f.script(&create_script(&request).unwrap());
+        assert_ne!(duplicate.status, 0, "{duplicate:?}");
+        assert!(!marker.exists());
+        assert_eq!(f.session(), original);
+
+        request.name = "invalid-directory".into();
+        request.directory = f
+            ._temp
+            .path()
+            .join("does-not-exist")
+            .to_str()
+            .unwrap()
+            .into();
+        let invalid = f.script(&create_script(&request).unwrap());
+        assert_ne!(invalid.status, 0, "{invalid:?}");
+        assert!(!marker.exists());
+        assert_eq!(f.session(), original);
+        f.must_tmux(&["kill-server"]);
+        let invalid = f.script(&create_script(&request).unwrap());
+        assert_ne!(invalid.status, 0, "{invalid:?}");
+        assert!(
+            f.sessions().is_empty(),
+            "invalid directory started a server"
+        );
+    }
+
+    #[test]
+    fn creation_preserves_literal_metadata_and_runs_the_authored_command_once() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else {
+            return;
+        };
+        let original = f.session();
+        let literal = "literal #{pid} #(exit 99) $(exit 99) ' ;";
+        let directory = f._temp.path().join(literal);
+        fs::create_dir(&directory).unwrap();
+        let marker = f._temp.path().join("command-output");
+        let request = NewSession {
+            name: literal.into(),
+            directory: directory.to_str().unwrap().into(),
+            command: format!(
+                "printf '%s' {} >> {}; exec sleep 120;",
+                shell_quote(literal),
+                shell_quote(marker.to_str().unwrap()),
+            ),
+        };
+        let result = f.script(&create_script(&request).unwrap());
+        assert_eq!(result.status, 0, "{result:?}");
+        let (created, inventory) = parse_created_session(&result.stdout).unwrap();
+        assert_eq!(inventory.len(), 2);
+        assert!(inventory.iter().any(|session| session == &original));
+        assert_eq!(created.name, literal);
+        assert_eq!(
+            fs::canonicalize(&created.path).unwrap(),
+            fs::canonicalize(&directory).unwrap()
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fs::read_to_string(&marker).unwrap_or_default() != literal {
+            assert!(
+                Instant::now() < deadline,
+                "authored command did not run once"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(fs::read_to_string(&marker).unwrap(), literal);
+        assert_eq!(created.socket_path, original.socket_path);
+        assert_eq!(created.server_pid, original.server_pid);
+        assert_ne!(created.id, original.id);
+
+        // A same-name replacement must never satisfy the captured creation.
+        f.must_tmux(&["kill-session", "-t", &created.id]);
+        let replacement = f.script(&create_script(&request).unwrap());
+        assert_eq!(replacement.status, 0, "{replacement:?}");
+        let (replacement, _) = parse_created_session(&replacement.stdout).unwrap();
+        assert_ne!(created.id, replacement.id);
+        let (_, rest) = result.stdout.split_once('\n').unwrap();
+        let (identity, _) = rest.split_once('\n').unwrap();
+        let raced = format!("DELUX_CREATED_1\n{identity}\n{}", frame(&f.sessions()));
+        assert!(parse_created_session(&raced).is_err());
+        assert_eq!(
+            f.script(&preview_script(&created).unwrap()).status,
+            SESSION_CHANGED
+        );
+    }
+
+    #[test]
+    fn explicit_creation_starts_missing_server_and_resolves_target_home() {
+        let _env = env_read();
+        let Some(mut f) = Fixture::new() else {
+            return;
+        };
+        f.must_tmux(&["kill-server"]);
+        assert!(f.sessions().is_empty());
+        // A newly started server must not read the developer's tmux config.
+        f.env
+            .insert("HOME".into(), f._temp.path().as_os_str().into());
+        f.env
+            .insert("XDG_CONFIG_HOME".into(), f._temp.path().as_os_str().into());
+        let subdirectory = f._temp.path().join("literal #{pid}");
+        fs::create_dir(&subdirectory).unwrap();
+        for (index, directory) in ["", "~", "~/literal #{pid}"].into_iter().enumerate() {
+            let request = NewSession {
+                name: format!("created-{index}"),
+                directory: directory.into(),
+                command: String::new(),
+            };
+            let result = f.script(&create_script(&request).unwrap());
+            assert_eq!(result.status, 0, "{result:?}");
+            let (created, inventory) = parse_created_session(&result.stdout).unwrap();
+            assert_eq!(inventory.len(), index + 1);
+            assert_eq!(created.name, request.name);
+            let expected = if index == 2 {
+                &subdirectory
+            } else {
+                f._temp.path()
+            };
+            assert_eq!(
+                fs::canonicalize(&created.path).unwrap(),
+                fs::canonicalize(expected).unwrap()
+            );
+            let observed = f
+                .sessions()
+                .into_iter()
+                .find(|s| s.id == created.id)
+                .unwrap();
+            assert_eq!(created.server_pid, observed.server_pid);
+            assert_eq!(created.server_start, observed.server_start);
+            assert_eq!(created.created, observed.created);
+            assert_eq!(created.socket_path, observed.socket_path);
         }
     }
 

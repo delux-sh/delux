@@ -1,4 +1,4 @@
-//! Keyboard, mouse, paste, and SSH-user form handling.
+//! Keyboard, mouse, paste, and right-panel form handling.
 
 use std::io;
 
@@ -7,9 +7,10 @@ use ratatui::crossterm::event::{
 };
 
 use super::{Command, Picker, RowKind, UserInput};
-use crate::app::Choice;
+use crate::app::{Choice, Status};
 use crate::display::display;
 use crate::exit_codes;
+use crate::session_form::{FormAction, SessionForm};
 use crate::workers::with_user;
 
 impl Picker {
@@ -18,6 +19,9 @@ impl Picker {
             return None;
         }
         self.show_scroll_hint = false;
+        if self.creation.is_some() {
+            return self.creation_key(key);
+        }
         if key.code == KeyCode::BackTab
             || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
         {
@@ -133,6 +137,7 @@ impl Picker {
                 }
             }
             KeyCode::Char('f') => self.toggle_pin(),
+            KeyCode::Char('n') => self.start_creation(),
             KeyCode::Char('u') => return self.start_user_input(false),
             KeyCode::Char('p') => {
                 self.tint = self.tint.next();
@@ -149,6 +154,68 @@ impl Picker {
         None
     }
 
+    pub(super) fn start_creation(&mut self) {
+        if self.creation_pending.is_some() {
+            self.notice = "Waiting for the previous creation request to stop…".into();
+            return;
+        }
+        let Some(row) = self.current_row() else {
+            self.notice = "Select a computer before creating a session.".into();
+            return;
+        };
+        let entry = &self.entries[row.entry];
+        if entry.status() != Status::Ready {
+            self.notice = if entry.worker.destination.is_some() {
+                "Connect to this computer with Enter before creating a session.".into()
+            } else {
+                "This computer is not ready; check tmux and press r to rescan.".into()
+            };
+            return;
+        }
+        let directory = self
+            .session(row)
+            .map_or("", |session| session.path.as_str());
+        self.creation = Some(SessionForm::new(entry.worker.clone(), directory.to_owned()));
+        self.terminal_focused = false;
+        self.notice.clear();
+    }
+
+    fn creation_key(&mut self, key: KeyEvent) -> Option<Command> {
+        let action = self.creation.as_mut()?.key(key)?;
+        match action {
+            FormAction::Cancel => {
+                self.creation = None;
+                if let Some(cancel) = &self.creation_pending {
+                    cancel.cancel();
+                    self.notice =
+                        "Stopping creation; a session may already have been created.".into();
+                } else {
+                    self.notice.clear();
+                }
+                None
+            }
+            FormAction::Submit(request) => {
+                let form = self.creation.as_mut()?;
+                if !self.entries.iter().any(|entry| {
+                    entry.worker.key == form.worker.key
+                        && entry.worker.destination == form.worker.destination
+                        && entry.status() == Status::Ready
+                }) {
+                    form.busy = false;
+                    form.error = "Computer is no longer ready. Esc to return and reconnect.".into();
+                    return None;
+                }
+                let cancel = self.cancel.child();
+                self.creation_pending = Some(cancel.clone());
+                Some(Command::Create {
+                    worker: form.worker.clone(),
+                    request,
+                    cancel,
+                })
+            }
+        }
+    }
+
     pub(super) fn terminal_mouse_event(&self, mut event: MouseEvent) -> Option<MouseEvent> {
         if !matches!(
             event.kind,
@@ -160,6 +227,7 @@ impl Picker {
             || !self.terminal_visible
             || self.active.is_none()
             || self.input.is_some()
+            || self.creation.is_some()
             || self.filtering
             || !self
                 .terminal_area
@@ -191,6 +259,7 @@ impl Picker {
             }
         } else if !self.terminal_focused
             && self.input.is_none()
+            && self.creation.is_none()
             && self.list_area.contains((event.column, event.row).into())
         {
             match event.kind {
@@ -215,7 +284,11 @@ impl Picker {
     }
 
     pub(super) fn inactive_scroll_hint(&self) -> Option<&'static str> {
-        if self.terminal_focused || self.input.is_some() || self.filtering {
+        if self.terminal_focused
+            || self.input.is_some()
+            || self.creation.is_some()
+            || self.filtering
+        {
             return None;
         }
         if self.terminal_visible {
@@ -237,6 +310,10 @@ impl Picker {
     }
 
     pub(super) fn paste(&mut self, text: &str) -> Option<Command> {
+        if let Some(form) = &mut self.creation {
+            form.paste(text);
+            return None;
+        }
         if self.terminal_focused {
             if self.terminal_visible
                 && let Some(active) = &mut self.active

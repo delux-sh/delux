@@ -1,4 +1,4 @@
-//! Find existing tmux sessions across your computers and attach through SSH.
+//! Browse, create, and attach to tmux sessions across your computers through SSH.
 
 mod agents;
 mod ansi;
@@ -11,6 +11,7 @@ mod exit_codes;
 mod files;
 mod options;
 mod process;
+mod session_form;
 mod ssh_mux;
 mod state;
 mod terminal;

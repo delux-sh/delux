@@ -217,6 +217,9 @@ impl Harness {
                     result,
                 })
             }
+            Command::Create { .. } => {
+                panic!("Creation tests must deliver their completion explicitly")
+            }
             Command::Launch(choice) => {
                 self.effects.borrow_mut().launched.push(choice);
                 None
@@ -303,12 +306,204 @@ fn terminal_harness(args: &[&str]) -> Harness {
 }
 
 #[test]
+fn creation_cancellation_preserves_the_client_and_never_attaches_late_success() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["n", "new-work"]);
+    let Some(Command::Create { worker, cancel, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    harness.press(&["enter"]);
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    harness.press(&["esc", "n"]);
+    assert!(cancel.is_cancelled());
+    assert!(harness.picker.creation.is_none());
+    assert!(harness.picker.creation_pending.is_some());
+    let created = session("$2", "new-work");
+    let result = harness.picker.update(Message::Created {
+        worker,
+        result: Ok((created.clone(), vec![created])),
+    });
+    assert!(matches!(result, Some(Command::Discover { .. })));
+    assert!(!harness.picker.reorder_on_scan);
+    assert!(harness.picker.creation_pending.is_none());
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    assert!(!harness.picker.terminal_focused);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn creation_requires_a_ready_unchanged_computer() {
+    let computer = remote("box", "box", "alice@box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![failed(&computer, Status::AuthRequired, "denied")],
+    );
+    harness.press(&["n"]);
+    assert!(harness.picker.creation.is_none());
+    assert!(harness.picker.creation_pending.is_none());
+    harness
+        .picker
+        .update(Message::Checked(ready(&computer, vec![])));
+    harness.press(&["n", "new-work"]);
+    harness.picker.entries[0].worker.destination = Some("bob@box".into());
+    harness.press(&["enter"]);
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(!harness.picker.creation.as_ref().unwrap().busy);
+    harness.press(&["esc", "n", "new-work"]);
+    let Some(Command::Create { worker, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected creation on changed computer");
+    };
+    harness.picker.entries[0].worker.destination = Some("carol@box".into());
+    let created = session("$2", "new-work");
+    let result = harness.picker.update(Message::Created {
+        worker,
+        result: Ok((created.clone(), vec![created])),
+    });
+    assert!(matches!(result, Some(Command::Discover { .. })));
+    assert!(harness.picker.entries[0].sessions().is_empty());
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn creation_success_appends_without_reordering_or_pinning_and_selects_exact_identity() {
+    let computer = worker("box", "box");
+    let mut first = session("$0", "first");
+    first.activity = NOW;
+    let mut second = session("$1", "second");
+    second.activity = NOW - 1;
+    // The form starts in the selected session's directory.
+    second.path = "/srv/second".into();
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![first.clone(), second.clone()])],
+    );
+    harness.press(&["/", "second", "enter", "n", "new-work"]);
+    let Some(Command::Create {
+        worker, request, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(request.directory, second.path);
+    let mut created = session("$2", "new-work");
+    created.created += 1;
+    second.activity = NOW + 1;
+    let result = harness.picker.update(Message::Created {
+        worker,
+        result: Ok((created.clone(), vec![created.clone(), second, first])),
+    });
+    harness.drive(result);
+    let launched = harness.launched();
+    assert_eq!(launched.len(), 1);
+    assert_eq!(launched[0].session.as_ref(), Some(&created));
+    let ids: Vec<_> = harness.picker.entries[0]
+        .sessions()
+        .iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert_eq!(ids, ["$0", "$1", "$2"]);
+    assert_eq!(harness.picker.selected_session().unwrap().1, created);
+    assert!(harness.picker.filter.is_empty());
+    assert!(harness.picker.creation.is_none());
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(harness.picker.state.pins.is_empty());
+    assert!(harness.effects.borrow().states.is_empty());
+}
+
+#[test]
+fn creation_failure_rescans_without_retrying_or_replacing_the_client() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["n", "new-work"]);
+    let Some(Command::Create { worker, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    let result = harness.picker.update(Message::Created {
+        worker,
+        result: Err((Status::ProbeFailed, "Command timed out after 12s".into())),
+    });
+    assert!(matches!(result, Some(Command::Discover { .. })));
+    assert!(!harness.picker.reorder_on_scan);
+    harness.drive(result);
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    assert!(harness.picker.creation_pending.is_none());
+    let form = harness.picker.creation.as_ref().unwrap();
+    assert!(!form.busy);
+    assert!(form.error.contains("timed out"));
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn creation_form_owns_keys_paste_and_wheel_in_all_layouts() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["n"]);
+    harness.picker.update(Message::Paste("new-work\n\t".into()));
+    let selection = harness.picker.selection.clone();
+    for (width, height) in [(120, 30), (70, 40), (40, 12), (3, 3), (1, 1)] {
+        harness.buffer(width, height);
+        assert!(!harness.picker.terminal_visible);
+        assert!(!harness.picker.preview_visible);
+        assert!(harness.picker.inactive_scroll_hint().is_none());
+        let area = harness.picker.terminal_area;
+        harness.picker.update(Message::Mouse(wheel(
+            MouseEventKind::ScrollDown,
+            area.x,
+            area.y,
+        )));
+        let area = harness.picker.list_area;
+        harness.picker.update(Message::Mouse(wheel(
+            MouseEventKind::ScrollDown,
+            area.x,
+            area.y,
+        )));
+        assert_eq!(harness.picker.selection, selection);
+        assert!(!harness.picker.show_scroll_hint);
+    }
+    let Some(Command::Create { request, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(request.name, "new-work");
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(!harness.picker.quit);
+    assert!(harness.picker.creation.is_none());
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+}
+
+#[test]
 fn terminal_focus_keeps_shortcuts_and_paste_out_of_the_picker() {
     let mut harness = terminal_harness(&["/bin/cat"]);
     let generation = harness.picker.generation;
-    harness.press(&["q", "r", "tab", "/", "1", "2"]);
+    harness.press(&["q", "r", "n", "tab", "/", "1", "2"]);
     assert!(!harness.picker.quit);
     assert!(!harness.picker.filtering);
+    assert!(harness.picker.creation.is_none());
     assert_eq!(harness.picker.generation, generation);
     assert!(
         harness
@@ -970,14 +1165,14 @@ fn unified_list_orders_computers_and_authenticates_inline() {
     assert_eq!(launched.len(), 1);
     assert_eq!(launched[0].worker.key, "auth");
     assert!(launched[0].session.is_none());
-    // Enter on a computer without sessions explains instead of launching.
+    // Enter on an empty computer opens a form without creating anything.
     harness.press(&["down", "enter"]);
     assert_eq!(harness.launched().len(), 1);
-    assert!(
-        harness.picker.notice.contains("no tmux sessions"),
-        "{}",
-        harness.picker.notice
+    assert_eq!(
+        harness.picker.creation.as_ref().unwrap().worker.key,
+        "empty"
     );
+    assert!(harness.picker.creation_pending.is_none());
     // Completion expands the computer without stealing selection while browsing.
     harness.picker.update(Message::Checked(ready(
         &launched[0].worker,
@@ -987,7 +1182,7 @@ fn unified_list_orders_computers_and_authenticates_inline() {
         harness.picker.selection,
         Selection::Computer("empty".into())
     );
-    harness.press(&["up", "enter"]);
+    harness.press(&["esc", "up", "enter"]);
     let launched = harness.launched();
     assert_eq!(launched[1].worker.key, "auth");
     assert_eq!(launched[1].session.as_ref().unwrap().id, "$9");

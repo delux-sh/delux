@@ -16,7 +16,7 @@ Before the first release, fixes land on `main`. After publication, security fixe
 
 ### SSH and credentials
 
-Authentication and host keys stay with OpenSSH. Delux reads SSH configuration rather than importing keys or saving passwords. Background scans and previews use `BatchMode=yes` and `StrictHostKeyChecking=yes`: they cannot prompt or accept unknown host keys. Interactive prompts appear only after you choose to sign in or attach. Verify fingerprints through a trusted channel before accepting them.
+Authentication and host keys stay with OpenSSH. Delux reads SSH configuration rather than importing keys or saving passwords. Background scans, previews, and explicit session creation use `BatchMode=yes` and `StrictHostKeyChecking=yes`: they cannot prompt or accept unknown host keys. Interactive prompts appear only after you choose to sign in or attach. Verify fingerprints through a trusted channel before accepting them.
 
 Sign-in, scans, previews, and attachments reuse a private, per-process SSH control connection where possible. Delux closes these connections on exit; connections with no active channels expire after 30 seconds. An active sign-in or attached client keeps the connection alive, and background probe timeouts do not reset it.
 
@@ -25,6 +25,8 @@ Port, agent, and X11 forwarding are disabled for every Delux SSH operation, incl
 ### Commands and terminal output
 
 Delux validates SSH destinations, quotes session identifiers in commands, and checks session identity before attaching. A vanished or replaced session is reported rather than silently substituted. Remote login shells must accept POSIX-style command quoting.
+
+Session creation requires explicit submission on a ready computer. Names and directories are literal data; only `~` and `~/` expand to the target account's home. The optional command is intentionally executed as a tmux shell command, so submit only commands you trust. Duplicate names are rejected, and creation is never retried automatically. Cancellation or a lost SSH response cannot undo a remote creation; rescan before trying again. A failed or cancelled creation leaves the previously connected client in place.
 
 Picker previews use read-only `tmux capture-pane`. Both previews and the embedded terminal render parsed output rather than passing escape sequences directly to your terminal. Remote clipboard, window-title, and window-resize requests are ignored. The full-terminal `delux attach` command passes normal tmux output through to your terminal instead.
 

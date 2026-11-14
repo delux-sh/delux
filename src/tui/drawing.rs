@@ -37,6 +37,15 @@ impl Picker {
         self.terminal_visible = false;
         self.list_area = Rect::default();
         let signing_in = self.input.as_ref().is_some_and(|input| input.connect);
+        let creating = self.creation.is_some();
+        if creating && area.height < 5 {
+            self.preview_visible = false;
+            self.list_height = 0;
+            if let Some(form) = &self.creation {
+                form.render(frame, area, tint);
+            }
+            return;
+        }
         if signing_in && area.height < 5 {
             self.preview_visible = false;
             self.list_height = 0;
@@ -96,13 +105,13 @@ impl Picker {
             body,
             self.rows.len(),
             self.active.is_some(),
-            signing_in || (self.active.is_some() && self.terminal_focused),
+            signing_in || creating || (self.active.is_some() && self.terminal_focused),
         );
-        let show_terminal = !signing_in && self.shows_terminal();
-        self.preview_visible = !signing_in && !show_terminal && preview_area.is_some();
+        let show_terminal = !signing_in && !creating && self.shows_terminal();
+        self.preview_visible = !signing_in && !creating && !show_terminal && preview_area.is_some();
         self.list_height = list_area.height;
 
-        let sidebar_inactive = self.terminal_focused || signing_in;
+        let sidebar_inactive = self.terminal_focused || signing_in || creating;
         let items = self.render_rows(list_area.width, sidebar_inactive);
         let mut block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -168,7 +177,10 @@ impl Picker {
             }
         }
         if let Some(area) = preview_area {
-            if signing_in {
+            if let Some(form) = &self.creation {
+                self.terminal_area = Block::bordered().inner(area);
+                form.render(frame, area, tint);
+            } else if signing_in {
                 self.render_sign_in(frame, area);
             } else if show_terminal {
                 self.render_terminal(frame, area);
@@ -370,7 +382,15 @@ impl Picker {
     }
 
     pub(super) fn footer_line(&self, width: u16) -> Line<'static> {
-        let hints: &[(&str, &str)] = if self.terminal_focused
+        let hints: &[(&str, &str)] = if self.creation.is_some() {
+            &[
+                ("tab", "next field"),
+                ("enter", "create"),
+                ("esc", "back"),
+                ("ctrl-u", "clear"),
+                ("ctrl-c/shift-tab", "back"),
+            ]
+        } else if self.terminal_focused
             && self
                 .active
                 .as_ref()
@@ -413,6 +433,7 @@ impl Picker {
                 ("u", "ssh user"),
                 ("r", "rescan"),
                 ("↑↓", "move"),
+                ("n", "new session"),
                 ("p", "tint"),
             ]
         } else {
@@ -430,6 +451,7 @@ impl Picker {
                 ("f", "pin"),
                 ("r", "rescan"),
                 ("↑↓", "move"),
+                ("n", "new session"),
                 ("u", "ssh user"),
                 ("p", "tint"),
             ]
@@ -439,6 +461,7 @@ impl Picker {
         let focus = (self.active.is_some()
             && !self.terminal_focused
             && self.input.is_none()
+            && self.creation.is_none()
             && !self.filtering)
             .then_some((
                 "tab",
@@ -545,7 +568,7 @@ impl Picker {
             Status::Ready => {
                 lines.push(Line::raw("No tmux sessions on this computer yet."));
                 lines.push(Line::styled(
-                    "Start one there with `tmux new -s NAME`, then press r.",
+                    "Press Enter or n to create a session here.",
                     theme::muted(),
                 ));
                 Signal::Ready
