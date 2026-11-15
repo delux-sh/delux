@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::cancel::Cancel;
 use crate::display::display;
 use crate::exit_codes::{
@@ -435,9 +437,12 @@ pub fn attach(
     })
 }
 
-fn show_inventory(out: &mut dyn Write, inventory: &Inventory) {
+fn show_inventory(out: &mut dyn Write, inventory: &Inventory, separate: bool) {
+    if separate {
+        let _ = writeln!(out);
+    }
     let worker = &inventory.worker;
-    let _ = write!(out, "\n{}", display(&worker.name, 200));
+    let _ = write!(out, "{}", display(&worker.name, 200));
     if let Some(destination) = &worker.destination
         && destination != &worker.name
     {
@@ -457,19 +462,41 @@ fn show_inventory(out: &mut dyn Write, inventory: &Inventory) {
     } else if inventory.sessions.is_empty() {
         let _ = writeln!(out, "  No tmux sessions");
     }
-    for session in &inventory.sessions {
-        let windows = if session.windows == 1 {
-            "window"
-        } else {
-            "windows"
-        };
+    let mut widths = [0; 3];
+    let rows: Vec<_> = inventory
+        .sessions
+        .iter()
+        .map(|session| {
+            let name = display(&session.name, 200);
+            let windows = if session.windows == 1 {
+                "window"
+            } else {
+                "windows"
+            };
+            let count_width = session.windows.max(1).ilog10() as usize + 1;
+            let row_widths = [
+                name.width(),
+                session.id.width(),
+                count_width + 1 + windows.len() + 1,
+            ];
+            for (width, row_width) in widths.iter_mut().zip(row_widths) {
+                *width = (*width).max(row_width);
+            }
+            (name, windows, row_widths)
+        })
+        .collect();
+    for (session, (name, windows, row_widths)) in inventory.sessions.iter().zip(rows) {
         let _ = write!(
             out,
-            "  {}  {}  {} {}, ",
-            display(&session.name, 200),
+            "  {name}{:name_pad$}  {}{:id_pad$}  {} {windows},{:windows_pad$} ",
+            "",
             session.id,
+            "",
             session.windows,
-            windows,
+            "",
+            name_pad = widths[0] - row_widths[0],
+            id_pad = widths[1] - row_widths[1],
+            windows_pad = widths[2] - row_widths[2],
         );
         let _ = match session.attached {
             0 => writeln!(out, "detached"),
@@ -510,14 +537,14 @@ fn run_list(cancel: &Cancel, opts: &Options, config: &Config) -> Result<i32, Str
         }
     }
     let mut inventories = Vec::new();
-    for inventory in scan(cancel, workers) {
+    for (index, inventory) in scan(cancel, workers).into_iter().enumerate() {
         if inventory.status != Status::Ready {
             code = 1;
         }
         if opts.json {
             inventories.push(inventory);
         } else {
-            show_inventory(&mut io::stdout(), &inventory);
+            show_inventory(&mut io::stdout(), &inventory, index != 0);
         }
     }
     if cancel.is_cancelled() {
@@ -809,19 +836,59 @@ mod tests {
             inventory.sessions[0].windows = windows;
             inventory.sessions[0].attached = attached;
             let mut output = Vec::new();
-            show_inventory(&mut output, &inventory);
+            show_inventory(&mut output, &inventory, false);
             let output = String::from_utf8(output).unwrap();
-            assert_eq!(output, format!("\nlocal\n  work  $7  {expected}\n"));
+            assert_eq!(output, format!("local\n  work  $7  {expected}\n"));
         }
         inventory.sessions.clear();
         inventory.status = Status::ProbeFailed;
         inventory.detail = "connection refused".into();
         let mut output = Vec::new();
-        show_inventory(&mut output, &inventory);
+        show_inventory(&mut output, &inventory, false);
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "\nlocal\n  probe-failed: connection refused\n",
+            "local\n  probe-failed: connection refused\n",
         );
+    }
+
+    #[test]
+    fn human_inventory_aligns_display_columns_and_separates_computers() {
+        let mut inventory = Inventory {
+            worker: local_worker(),
+            sessions: vec![session(); 3],
+            status: Status::Ready,
+            detail: String::new(),
+        };
+        inventory.sessions[0].name = "a b".into();
+        inventory.sessions[1].name = "東京".into();
+        inventory.sessions[1].id = "$123".into();
+        inventory.sessions[1].windows = 12;
+        inventory.sessions[1].attached = 2;
+        inventory.sessions[2].name = "e\u{301}".into();
+        inventory.sessions[2].id = "$9".into();
+        inventory.sessions[2].attached = 1;
+        let mut output = Vec::new();
+        show_inventory(&mut output, &inventory, false);
+        inventory.worker.name = "other computer".into();
+        inventory.sessions.clear();
+        show_inventory(&mut output, &inventory, true);
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(
+            output,
+            concat!(
+                "local\n",
+                "  a b   $7    1 window,   detached\n",
+                "  東京  $123  12 windows, 2 clients attached\n",
+                "  e\u{301}     $9    1 window,   1 client attached\n",
+                "\nother computer\n",
+                "  No tmux sessions\n",
+            )
+        );
+        let rows: Vec<_> = output.lines().skip(1).take(3).collect();
+        for (row, attachment) in rows.iter().zip(["detached", "2 clients", "1 client"]) {
+            assert_eq!(row[..row.find('$').unwrap()].width(), 8);
+            assert_eq!(row[..row.find(attachment).unwrap()].width(), 26);
+        }
     }
 
     #[test]

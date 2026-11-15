@@ -11,12 +11,8 @@ Delux uses SSH and your existing tmux sessions. It can find computers through [T
 For macOS and Linux. **0.1.0 binary downloads and Homebrew installation are pending publication**, not available yet. After the release and public tap are published:
 
 ```sh
-brew tap delux-sh/tap
-brew trust --formula delux-sh/tap/delux
 brew install delux-sh/tap/delux
 ```
-
-Current Homebrew requires explicit trust before loading a third-party formula. The trust command above authorizes only Delux, not every formula in the tap.
 
 The release archives will cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
 
@@ -47,7 +43,9 @@ delux attach dev-box project   # full-terminal attachment, without the picker
 
 If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--host` and add `--no-local` to show only remote computers. See `delux --help` for all options.
 
-`delux list` prints available results even if a computer fails, but exits with status 1.
+Automatic Tailscale discovery includes only untagged, unshared computers whose known owner matches this computer's known owner. Add other computers explicitly with configured `hosts` or `--host`.
+
+`delux list` prints session columns aligned by display width, with a blank line between computers. It prints available results even if a computer fails, but exits with status 1. Use `--json` for scripts.
 
 ### In the picker
 
@@ -59,13 +57,16 @@ If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--
 | `shift-tab` | Return to the list without disconnecting |
 | `/` | Filter computers and sessions |
 | `f` | Pin a session |
+| `p` | Cycle the session tint |
 | `u` | Set the SSH user |
 | `r` | Rescan |
 | `q` | Quit |
 
 When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 
-Scroll with the pointer over the focused panel. For tmux scrollback, run `tmux set -g mouse on` on the session's computer, or use copy mode (usually Ctrl-B, then `[`). The list also supports wheel navigation.
+The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab to interact), and **Active** (Shift-Tab for the list). Inactive borders and titles are muted; session output stays readable.
+
+Scroll with the pointer over the focused panel. Scrolling over an inactive preview or terminal shows a centered message in that panel: **Press Enter to attach** or **Press Tab to interact**. A keypress dismisses it; the message does not connect, change focus, or resize the terminal. For tmux scrollback, run `tmux set -g mouse on` on the session's computer, or use copy mode (usually Ctrl-B, then `[`). The list also supports wheel navigation.
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
 

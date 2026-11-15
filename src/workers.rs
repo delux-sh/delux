@@ -268,10 +268,10 @@ pub fn peer_workers(raw: &str, config: &Config) -> Result<Vec<Worker>, String> {
         let shared = field::<bool>(peer, "ShareeNode")?.unwrap_or(false);
         let user = field::<u64>(peer, "UserID")?;
         let peer_tagged = tagged(peer)?;
-        let other_user = !own_tagged
-            && !peer_tagged
-            && matches!((own_user, user), (Some(own), Some(peer)) if own != peer);
-        let restricted = shared || other_user;
+        let restricted = shared
+            || own_tagged
+            || peer_tagged
+            || !matches!((own_user, user), (Some(own), Some(peer)) if own != 0 && own == peer);
         let addresses = peer
             .get("TailscaleIPs")
             .map(|value| value.as_array().ok_or(INVALID_INVENTORY))
@@ -283,7 +283,7 @@ pub fn peer_workers(raw: &str, config: &Config) -> Result<Vec<Worker>, String> {
         let aliases = [id, dns, short, host_name];
         let mut mapping = "";
         let mut ignored = false;
-        // Shared and other-user peers cannot claim local aliases through their names.
+        // Restricted peers cannot claim local aliases through their names.
         let aliases = if restricted {
             &aliases[..2]
         } else {
@@ -670,10 +670,10 @@ mod tests {
 
     #[test]
     fn peer_mapping_precedence_and_offline_hint() {
-        let status = r#"{"BackendState":"Running","Version":"1.90.0","Self":{"ID":"self"},"Peer":{
-            "nodekey:a":{"ID":"node-1","DNSName":"dev.tail.test.","HostName":"Dev Laptop","OS":"macOS","Online":false,"TailscaleIPs":["100.64.0.1","fd7a:115c:a1e0::1"],"LastSeen":"2025-01-01T00:00:00Z"},
-            "nodekey:b":{"ID":"node-2","DNSName":"phone.tail.test.","OS":"iOS"},
-            "nodekey:c":{"ID":"node-3","DNSName":"ignore.tail.test.","OS":"linux"}
+        let status = r#"{"BackendState":"Running","Version":"1.90.0","Self":{"ID":"self","UserID":10},"Peer":{
+            "nodekey:a":{"ID":"node-1","DNSName":"dev.tail.test.","HostName":"Dev Laptop","OS":"macOS","UserID":10,"Online":false,"TailscaleIPs":["100.64.0.1","fd7a:115c:a1e0::1"],"LastSeen":"2025-01-01T00:00:00Z"},
+            "nodekey:b":{"ID":"node-2","DNSName":"phone.tail.test.","OS":"iOS","UserID":10},
+            "nodekey:c":{"ID":"node-3","DNSName":"ignore.tail.test.","OS":"linux","UserID":10}
         }}"#;
         let aliases = ["node-1", "dev.tail.test", "dev", "Dev Laptop"];
         for first in 0..aliases.len() {
@@ -705,11 +705,11 @@ mod tests {
 
     #[test]
     fn peer_filtering_and_explicit_opt_in() {
-        let status = r#"{"BackendState":"Running","Peer":{
-            "b":{"ID":"bsd","DNSName":"bsd.tail.test.","OS":"freebsd"},
-            "a":{"ID":"linux","DNSName":"linux.tail.test.","OS":"linux"},
-            "c":{"ID":"phone","DNSName":"phone.tail.test.","OS":"iOS"},
-            "d":{"ID":"mac","DNSName":"mac.tail.test.","OS":"macOS"}
+        let status = r#"{"BackendState":"Running","Self":{"UserID":10},"Peer":{
+            "b":{"ID":"bsd","DNSName":"bsd.tail.test.","OS":"freebsd","UserID":10},
+            "a":{"ID":"linux","DNSName":"linux.tail.test.","OS":"linux","UserID":10},
+            "c":{"ID":"phone","DNSName":"phone.tail.test.","OS":"iOS","UserID":10},
+            "d":{"ID":"mac","DNSName":"mac.tail.test.","OS":"macOS","UserID":10}
         }}"#;
         let workers = peer_workers(status, &Config::default()).unwrap();
         assert_eq!(workers.len(), 2);
@@ -739,7 +739,7 @@ mod tests {
         }}"#;
         let workers = peer_workers(status, &Config::default()).unwrap();
         let keys: Vec<_> = workers.iter().map(|worker| worker.key.as_str()).collect();
-        assert_eq!(keys, ["owned", "unknown"]);
+        assert_eq!(keys, ["owned"]);
 
         let configured = config(
             &[
@@ -755,12 +755,7 @@ mod tests {
             .collect();
         assert_eq!(
             destinations,
-            [
-                "owned.tail.test",
-                "alice@shared-alias",
-                "alice@other-alias",
-                "unknown.tail.test"
-            ]
+            ["owned.tail.test", "alice@shared-alias", "alice@other-alias"]
         );
         let ignored = config(&[("shared", "alice@shared-alias")], &["shared"]);
         assert!(
@@ -789,24 +784,36 @@ mod tests {
     }
 
     #[test]
-    fn missing_user_ids_allow_discovery_but_do_not_allow_shared_peers() {
-        for own in ["", r#","Self":{}"#, r#","Self":{"UserID":10}"#] {
+    fn discovery_requires_known_same_nonzero_user_ids() {
+        for own in [
+            "",
+            r#","Self":{}"#,
+            r#","Self":{"UserID":0}"#,
+            r#","Self":{"UserID":10}"#,
+        ] {
             let status = format!(
                 r#"{{"BackendState":"Running"{own},"Peer":{{
                     "a":{{"ID":"unknown","DNSName":"unknown.tail.test.","OS":"linux"}},
                     "b":{{"ID":"owned","DNSName":"owned.tail.test.","OS":"linux","UserID":10}},
-                    "c":{{"ID":"shared","DNSName":"shared.tail.test.","OS":"linux","ShareeNode":true}}
+                    "c":{{"ID":"zero","DNSName":"zero.tail.test.","OS":"linux","UserID":0}},
+                    "d":{{"ID":"shared","DNSName":"shared.tail.test.","OS":"linux","UserID":10,"ShareeNode":true}},
+                    "e":{{"ID":"other","DNSName":"other.tail.test.","OS":"macOS","UserID":20}}
                 }}}}"#
             );
             let workers = peer_workers(&status, &Config::default()).unwrap();
             let keys: Vec<_> = workers.iter().map(|worker| worker.key.as_str()).collect();
-            assert_eq!(keys, ["unknown", "owned"]);
+            let expected = if own == r#","Self":{"UserID":10}"# {
+                vec!["owned"]
+            } else {
+                vec![]
+            };
+            assert_eq!(keys, expected, "local ownership: {own}");
         }
     }
 
     #[test]
     fn ignored_peer_aliases_do_not_reappear_as_configured_workers() {
-        let status = r#"{"BackendState":"Running","Peer":{"key":{"ID":"stable","DNSName":"dev.tail.test.","HostName":"hostname","OS":"linux"}}}"#;
+        let status = r#"{"BackendState":"Running","Self":{"UserID":10},"Peer":{"key":{"ID":"stable","DNSName":"dev.tail.test.","HostName":"hostname","OS":"linux","UserID":10}}}"#;
         for alias in ["stable", "dev.tail.test", "dev", "hostname"] {
             let config = config(&[("stable", "ssh-alias"), ("dev", "other-alias")], &[alias]);
             assert!(
@@ -818,10 +825,10 @@ mod tests {
 
     #[test]
     fn peer_address_fallback_and_deterministic_ordering() {
-        let status = r#"{"BackendState":"Running","Peer":{
-            "z":{"OS":"linux","TailscaleIPs":["100.64.0.2"]},
-            "a":{"HostName":"visible name","OS":"macOS","TailscaleIPs":["fd7a:115c:a1e0::1"]},
-            "m":{"OS":"linux"}
+        let status = r#"{"BackendState":"Running","Self":{"UserID":10},"Peer":{
+            "z":{"OS":"linux","UserID":10,"TailscaleIPs":["100.64.0.2"]},
+            "a":{"HostName":"visible name","OS":"macOS","UserID":10,"TailscaleIPs":["fd7a:115c:a1e0::1"]},
+            "m":{"OS":"linux","UserID":10}
         }}"#;
         let config = config(
             &[
@@ -866,7 +873,7 @@ mod tests {
             r#"{"BackendState":"Running","Peer":{"key":{"TailscaleIPs":[42]}}}"#,
             r#"{"BackendState":"Running","Peer":{"key":{"DNSName":42}}}"#,
             r#"{"BackendState":"Running","Peer":{"key":{"Online":"yes"}}}"#,
-            r#"{"BackendState":"Running","Peer":{"key":{"OS":"linux","DNSName":"host;id"}}}"#,
+            r#"{"BackendState":"Running","Self":{"UserID":10},"Peer":{"key":{"OS":"linux","UserID":10,"DNSName":"host;id"}}}"#,
             r#"{"BackendState":"Running"} {}"#,
         ] {
             assert!(
@@ -883,7 +890,10 @@ mod tests {
 
     #[test]
     fn explicit_hosts_bypass_discovery_and_deduplicate_destinations() {
-        let config = config(&[("alias", "user@host"), ("unused", "unused-host")], &[]);
+        let config = config(
+            &[("alias", "user@host"), ("unused", "unused-host")],
+            &["alias", "user@host"],
+        );
         let cancel = Cancel::new();
         let (workers, warning) = discover(
             &cancel,
@@ -1000,25 +1010,114 @@ mod tests {
     }
 
     #[test]
-    fn tagged_peer_or_self_allows_other_user_but_never_shared_discovery() {
-        for (own_tags, peer_tags, expected) in [
-            ("[]", "[]", false),
-            ("null", "null", false),
-            ("[]", r#"["tag:server"]"#, true),
-            (r#"["tag:client"]"#, "[]", true),
-            (r#"["tag:client"]"#, r#"["tag:server"]"#, true),
+    fn discover_preserves_safe_defaults_and_explicit_config_with_restricted_inventory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = env_write();
+        let dir = TempDir::new();
+        let command = dir.path().join("tailscale");
+        let inventory = dir.path().join("tailscale.json");
+        std::fs::write(&command, "#!/bin/sh\nexec /bin/cat \"$0.json\"\n").unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _path = EnvVar::set("PATH", dir.path());
+        for (own, eligible) in [
+            (r#","Self":{"UserID":10}"#, true),
+            ("", false),
+            (r#","Self":{}"#, false),
+            (r#","Self":{"UserID":0}"#, false),
+            (r#","Self":{"UserID":10,"Tags":["tag:client"]}"#, false),
         ] {
-            for shared in [false, true] {
-                let status = format!(
-                    r#"{{"BackendState":"Running","Self":{{"UserID":10,"Tags":{own_tags}}},
-                    "Peer":{{"a":{{"ID":"node-id","DNSName":"dev.tail.test.","OS":"linux",
-                    "UserID":20,"Tags":{peer_tags},"ShareeNode":{shared}}}}}}}"#
-                );
-                let workers = peer_workers(&status, &Config::default()).unwrap();
-                assert_eq!(workers.len(), usize::from(expected && !shared));
-                if let Some(worker) = workers.first() {
-                    assert_eq!(worker.key, "node-id");
-                    assert_eq!(worker.destination.as_deref(), Some("dev.tail.test"));
+            let raw = format!(
+                r#"{{"BackendState":"Running"{own},"Peer":{{
+                    "a":{{"ID":"owned","DNSName":"owned.tail.test.","OS":"macOS","UserID":10,"Online":false}},
+                    "b":{{"ID":"unknown-id","DNSName":"dev.foreign.test.","HostName":"dev","OS":"linux","Online":true}},
+                    "c":{{"ID":"tagged-id","DNSName":"tagged.tail.test.","OS":"linux","UserID":10,"Tags":["tag:server"]}},
+                    "d":{{"ID":"shared","DNSName":"shared.tail.test.","OS":"linux","UserID":10,"ShareeNode":true}},
+                    "e":{{"ID":"other","DNSName":"other.tail.test.","OS":"linux","UserID":20}},
+                    "f":{{"ID":"zero","DNSName":"zero.tail.test.","OS":"linux","UserID":0}},
+                    "g":{{"ID":"ignored-id","DNSName":"ignored.tail.test.","OS":"linux"}}
+                }}}}"#
+            );
+            std::fs::write(&inventory, raw).unwrap();
+            let (workers, warning) =
+                discover(&Cancel::new(), &Config::default(), &Options::default()).unwrap();
+            assert!(warning.is_empty(), "{warning}");
+            assert_eq!(workers.len(), 1 + usize::from(eligible), "{own}");
+            assert_eq!(workers[0], local_worker());
+            if eligible {
+                assert_eq!(workers[1].key, "owned");
+                assert_eq!(workers[1].destination.as_deref(), Some("owned.tail.test"));
+                assert_eq!(workers[1].online, Some(false));
+            }
+
+            let configured = config(
+                &[
+                    ("unknown-id", "alice@unknown"),
+                    ("tagged.tail.test", "alice@tagged"),
+                    ("dev", "safe-alias"),
+                    ("absent", "absent-alias"),
+                    ("ignored-id", "ignored-alias"),
+                ],
+                &["ignored.tail.test"],
+            );
+            let (workers, warning) =
+                discover(&Cancel::new(), &configured, &Options::default()).unwrap();
+            assert!(warning.is_empty(), "{warning}");
+            let mut expected = vec![local_worker()];
+            if eligible {
+                expected.push(Worker {
+                    key: "owned".into(),
+                    name: "owned".into(),
+                    destination: Some("owned.tail.test".into()),
+                    online: Some(false),
+                });
+            }
+            expected.extend([
+                Worker {
+                    key: "unknown-id".into(),
+                    name: "dev".into(),
+                    destination: Some("alice@unknown".into()),
+                    online: Some(true),
+                },
+                Worker {
+                    key: "tagged-id".into(),
+                    name: "tagged".into(),
+                    destination: Some("alice@tagged".into()),
+                    online: None,
+                },
+                explicit_worker("absent", &configured).unwrap(),
+                explicit_worker("dev", &configured).unwrap(),
+            ]);
+            assert_eq!(workers, expected, "{own}");
+        }
+    }
+
+    #[test]
+    fn discovery_requires_untagged_local_and_peer_even_with_matching_owners() {
+        for (own_tags, peer_tags, untagged) in [
+            ("[]", "[]", true),
+            ("null", "null", true),
+            ("[]", r#"["tag:server"]"#, false),
+            (r#"["tag:client"]"#, "[]", false),
+            (r#"["tag:client"]"#, r#"["tag:server"]"#, false),
+        ] {
+            for user in [0, 10, 20] {
+                for shared in [false, true] {
+                    let status = format!(
+                        r#"{{"BackendState":"Running","Self":{{"UserID":10,"Tags":{own_tags}}},
+                        "Peer":{{"a":{{"ID":"node-id","DNSName":"dev.tail.test.","OS":"linux",
+                        "UserID":{user},"Tags":{peer_tags},"ShareeNode":{shared}}}}}}}"#
+                    );
+                    let workers = peer_workers(&status, &Config::default()).unwrap();
+                    assert_eq!(
+                        workers.len(),
+                        usize::from(untagged && user == 10 && !shared),
+                        "{status}"
+                    );
+                    if let Some(worker) = workers.first() {
+                        assert_eq!(worker.key, "node-id");
+                        assert_eq!(worker.destination.as_deref(), Some("dev.tail.test"));
+                    }
                 }
             }
         }
@@ -1026,12 +1125,18 @@ mod tests {
 
     #[test]
     fn restricted_peers_cannot_claim_hostname_or_short_dns_mapping_or_ignore() {
-        for restriction in [
-            r#""UserID":20"#,
-            r#""UserID":10,"ShareeNode":true,"Tags":["tag:server"]"#,
+        for (own, restriction) in [
+            (r#"{"UserID":10}"#, r#""UserID":20"#),
+            (r#"{"UserID":10}"#, r#""UserID":10,"ShareeNode":true"#),
+            (r#"{"UserID":10}"#, r#""UserID":10,"Tags":["tag:server"]"#),
+            (r#"{"UserID":10}"#, r#""UserID":0"#),
+            (r#"{"UserID":10}"#, r#""Tags":[]"#),
+            (r#"{}"#, r#""UserID":10"#),
+            (r#"{"UserID":0}"#, r#""UserID":0"#),
+            (r#"{"UserID":10,"Tags":["tag:client"]}"#, r#""UserID":10"#),
         ] {
             let status = format!(
-                r#"{{"BackendState":"Running","Self":{{"UserID":10}},"Peer":{{
+                r#"{{"BackendState":"Running","Self":{own},"Peer":{{
                 "a":{{"ID":"node-id","DNSName":"dev.foreign.test.","HostName":"trusted",
                 "OS":"linux",{restriction}}}}}}}"#
             );

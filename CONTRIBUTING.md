@@ -8,6 +8,12 @@ Thanks for helping. Delux does one thing: it finds existing tmux sessions across
 - **New features or larger refactors:** open an issue first, so we can agree on scope before you spend time on it. Features that need a remote agent, a server, or account sync are out of scope.
 - **Security issues:** don't open a public issue; see [SECURITY.md](SECURITY.md).
 
+## UI release scope
+
+For 0.1.0, keep explicit focus-to-interact, clear Preview/Connected/Active states, and hints when scrolling over an inactive panel. Scrolling must not implicitly attach or move keyboard focus.
+
+Deferred until after 0.1.0: a settings panel and configurable scrolling, including an optional scroll-under-pointer behavior. Scrolling a read-only preview is distinct from forwarding wheel input to a connected application; preserve that distinction when designing these options.
+
 ## Development
 
 You need Rust 1.88 or newer and tmux 3.2 or newer (`rustup` is recommended for Rust). The SSH authentication regression also needs OpenSSH's client, `ssh-keygen`, and `/usr/sbin/sshd`; it starts a loopback server with temporary keys, not your normal SSH service. CI installs these dependencies on Linux. The full suite runs on macOS and Linux.
@@ -83,7 +89,7 @@ scripts/homebrew-formula.sh 0.1.0 release-downloads/SHA256SUMS > /path/to/homebr
 
 Use a fresh download directory and create the tap's `Formula/` directory if needed. Substitute the approved version for later releases. The generator requires exactly one valid checksum for each of the four targets; never guess checksums or substitute dry-run hashes for published ones. Its optional `BASE_URL` (including `file://`) is for prepublication archive testing, not the published formula.
 
-Review the generated URLs, checksums, dependency declarations, and GPL-3.0-or-later license. In a clean Homebrew environment, tap the reviewed repository and run `brew trust --formula delux-sh/tap/delux` before installing it from the published URLs. Install with its dependencies, then run `brew test delux` and `brew audit --strict delux`; do not bypass dependency resolution. Publish the tap and its formula only with separate maintainer approval, then update installation documentation to say downloads and Homebrew are available.
+Review the generated URLs, checksums, dependency declarations, and GPL-3.0-or-later license. In a clean Homebrew environment, install the reviewed formula from the published URLs with `brew install delux-sh/tap/delux`. The canonical fully qualified name grants [trust only to that formula](https://docs.brew.sh/Tap-Trust#installing-from-a-tap). Install with its dependencies, then run `brew test delux` and `brew audit --strict delux`; do not bypass dependency resolution. Publish the tap and its formula only with separate maintainer approval, then update installation documentation to say downloads and Homebrew are available.
 
 ## Pull requests
 

@@ -1,5 +1,29 @@
 # Verification record
 
+## Release review fixes
+
+Automatic discovery now requires known, matching, nonzero ownership on untagged local/peer nodes and excludes shared peers unless explicitly configured. Regression coverage includes missing/zero ownership, tags on either node, restricted aliases, ignores, and explicit hosts.
+
+The initial test run passed the non-picker checks but timed out on a new test fixture acquiring two attachment guards, and one old scroll assertion expected the wide footer at narrow widths. After splitting the fixture and checking footer preservation instead, all 53 picker tests passed. Clippy with warnings denied, Rust 1.88 all-target checking, the native macOS ARM64 release build, and Actionlint passed; formatting was applied.
+
+A real-PTY scenario with two private tmux sessions verified aligned CLI columns, no initial blank line, no automatic pins after attachment, explicit pin/unpin, stable order after detach/filter clearing, removal of channel numbers, complete 60-column hints, narrow-terminal attachment/input, and session preservation. No real user sessions were touched.
+
+A clean disposable Homebrew 7 prefix installed a dependency-free local formula containing the existing Delux binary using its canonical formula name. Its initially absent trust file acquired only that formula; another formula in the same tap remained untrusted. Sandboxing stayed enabled. Prefixes under `/tmp` failed Homebrew's prefix/sandbox guards, so the successful fixture used a disposable directory outside `/tmp`; all fixtures were removed. This verifies item-scoped install trust, not published download URLs or current four-platform packaging.
+
+Inspection of the raw OS boundaries covered descriptor ownership, IO buffer bounds, initialized terminal/process structures, post-fork restrictions, and kill-before-reap ordering. No additional release-blocking issue was identified in that inspection; it is not a formal safety audit. Module splitting and safe-syscall migration are separate maintenance work.
+
+Pre-merge review found that computers recovering from an empty or failed inventory appended all sessions in scan order. New sessions now append newest-first while existing sessions retain their positions. The expanded refresh/detach/filter regression and the rebuilt binary's isolated real-PTY scenario passed.
+
+## Inactive-panel scroll guidance
+
+The right panel distinguishes Preview (Enter to attach), Connected (Tab to interact), and Active (Shift-Tab for the list). Inactive titles and borders are muted without dimming session output. Wheel input over an inactive panel shows a centered, bordered message over that panel: Press Enter to attach or Press Tab to interact. It does not attach, change focus, overwrite diagnostics or the footer, or resize the terminal. A keypress dismisses it.
+
+All 49 picker tests and four preview-renderer tests passed, along with formatting, Clippy with warnings denied, and the native macOS ARM64 release build. Regression coverage includes previewing a different session while another client remains connected, unattached previews, filtering, pointer bounds, sidebar navigation, and unchanged terminal geometry.
+
+A real-PTY check with two isolated tmux sessions verified all three visible states, injected mouse-wheel hints, explicit attachment/focus, retention of the original client while browsing another preview, hint dismissal, side-by-side and stacked layouts, and preservation of both sessions after quitting. Temporary fixtures were removed. Physical trackpad behavior and remote SSH were not separately exercised. The four-platform packaging results below predate this UI change.
+
+The centered-message follow-up passed 48 picker checks and, after correcting an assertion that assumed every footer says “list focused,” the preview/footer regression passed on rerun. Clippy with warnings denied and the native release build passed. Real-PTY checks observed complete synchronized frames and verified centered messages in side-by-side and stacked layouts, unchanged footer and pane dimensions, key dismissal, and session preservation.
+
 ## 0.1.0 Homebrew preparation
 
 [Release dry run 43662052243](https://github.com/delux-sh/delux/actions/runs/43662052243) passed at `f3bd4cc`. It ran Linux/macOS CI and the minimum-Rust check, built all four GPL archives, and verified their checksums on native runners. Every platform installed the generated formula with full dependency resolution, passed `brew test` and `brew audit --strict`, and verified the installed executable was byte-identical to its archive.

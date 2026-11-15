@@ -1,6 +1,6 @@
-//! The preview panel: a rounded box titled with the channel and a status
+//! The preview panel: a rounded box titled with the selection and a status
 //! light, showing the session's real colors, SMPTE-style color bars while
-//! tuning or without signal, and brief static when the channel changes.
+//! tuning or without signal, and brief static when the selection changes.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -27,8 +27,6 @@ pub enum Signal {
 
 /// What the screen shows; the caller builds it from the picker's selection.
 pub struct Screen {
-    /// 1-based position of the selected session, shown as the channel number.
-    pub channel: Option<usize>,
     pub label: String,
     /// Shown in the bottom border, e.g. the session's command and directory.
     pub detail: String,
@@ -55,16 +53,13 @@ fn status(signal: Signal) -> (&'static str, Style) {
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, screen: &Screen, effects: Effects) {
     let (light, light_style) = status(screen.signal);
-    let channel = screen
-        .channel
-        .map_or_else(String::new, |channel| format!("CH {channel:02} · "));
     // Corners, spaces and the status light share the top border with the label.
     let room = usize::from(area.width).saturating_sub(light.width() + 6);
-    let label = truncate(&format!("{channel}{}", display(&screen.label, 120)), room);
+    let label = truncate(&display(&screen.label, 120), room);
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::muted_border())
-        .title(Line::from(format!(" {label} ")))
+        .title(Line::styled(format!(" {label} "), theme::muted()))
         .title(Line::from(vec![Span::styled(light, light_style), Span::raw(" ")]).right_aligned());
     if !screen.detail.is_empty() {
         let room = usize::from(area.width).saturating_sub(4);
@@ -202,7 +197,6 @@ mod tests {
 
     fn screen(signal: Signal, lines: &[&str]) -> Screen {
         Screen {
-            channel: Some(7),
             label: "devbox / project".into(),
             detail: String::new(),
             lines: lines
@@ -214,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn title_carries_channel_label_and_status_light() {
+    fn title_carries_only_label_and_status_light() {
         let buffer = draw(
             60,
             10,
@@ -223,7 +217,8 @@ mod tests {
         );
         let view = text(&buffer);
         let top = view.lines().next().unwrap();
-        assert!(top.starts_with("╭ CH 07 · devbox / project "), "{view}");
+        assert!(top.starts_with("╭ devbox / project "), "{view}");
+        assert!(!top.contains("CH "), "{view}");
         assert!(top.ends_with("● LIVE ╮"), "{view}");
         assert!(view.contains("hello"));
         assert_eq!(buffer[(0, 0)].fg, Color::DarkGray, "muted border");

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub pins: Vec<Pin>,
+    /// Legacy history is preserved on disk, but never displayed or updated.
     pub recent: Vec<Recent>,
 }
 
@@ -30,12 +31,9 @@ pub struct Recent {
     pub session: String,
 }
 
-pub const RECENT_LIMIT: usize = 10;
-
 #[derive(Clone, Copy)]
 pub(crate) enum StateChange<'a> {
     TogglePin { worker: &'a str, session: &'a str },
-    RecordRecent { worker: &'a str, session: &'a str },
 }
 
 /// Uses XDG_STATE_HOME, falling back to ~/.local/state.
@@ -189,7 +187,6 @@ impl State {
             StateChange::TogglePin { worker, session } => {
                 self.toggle_pin(worker, session);
             }
-            StateChange::RecordRecent { worker, session } => self.record_recent(worker, session),
         }
     }
 
@@ -212,34 +209,6 @@ impl State {
             });
             true
         }
-    }
-
-    /// Moves the pair to the front, deduplicates, and retains at most ten entries.
-    pub fn record_recent(&mut self, worker: &str, session: &str) {
-        let recent = match self
-            .recent
-            .iter()
-            .position(|recent| recent.worker == worker && recent.session == session)
-        {
-            Some(index) => self.recent.remove(index),
-            None => Recent {
-                worker: worker.into(),
-                session: session.into(),
-            },
-        };
-        self.recent.insert(0, recent);
-        let mut index = 1;
-        while index < self.recent.len() && index < RECENT_LIMIT {
-            let candidate = &self.recent[index];
-            if self.recent[..index].iter().any(|recent| {
-                recent.worker == candidate.worker && recent.session == candidate.session
-            }) {
-                self.recent.remove(index);
-            } else {
-                index += 1;
-            }
-        }
-        self.recent.truncate(RECENT_LIMIT);
     }
 }
 
@@ -348,7 +317,7 @@ mod tests {
         .unwrap();
         let state = update_state(
             path,
-            StateChange::RecordRecent {
+            StateChange::TogglePin {
                 worker: "remote",
                 session: "日本語",
             },
@@ -360,8 +329,11 @@ mod tests {
         assert_eq!(
             serialized,
             serde_json::json!({
-                "pins": [{"computer": "local", "session": "work name"}],
-                "recent": [{"computer": "remote", "session": "日本語"}],
+                "pins": [
+                    {"computer": "local", "session": "work name"},
+                    {"computer": "remote", "session": "日本語"},
+                ],
+                "recent": [],
             }),
         );
         assert!(std::fs::read(path).unwrap().ends_with(b"\n"));
@@ -377,7 +349,7 @@ mod tests {
         }
         let state = update_state(
             path,
-            StateChange::RecordRecent {
+            StateChange::TogglePin {
                 worker: "local",
                 session: "work name",
             },
@@ -524,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "subprocess fixture for concurrent_processes_preserve_pins_and_recents_through_symlinks"]
+    #[ignore = "subprocess fixture for concurrent_processes_preserve_pins_through_symlinks"]
     fn concurrent_state_writer_process() {
         let _env = env_read();
         let path = std::env::var_os("DELUX_STATE_TEST_PATH").expect("writer fixture path");
@@ -539,19 +511,11 @@ mod tests {
                 },
             )
             .unwrap();
-            update_state(
-                path.to_str().unwrap(),
-                StateChange::RecordRecent {
-                    worker: &worker,
-                    session: "main",
-                },
-            )
-            .unwrap();
         }
     }
 
     #[test]
-    fn concurrent_processes_preserve_pins_and_recents_through_symlinks() {
+    fn concurrent_processes_preserve_pins_through_symlinks() {
         let _env = env_read();
         let dir = TempDir::new();
         let path = dir.path().join("state.json");
@@ -600,18 +564,12 @@ mod tests {
         let state = load_state(path.to_str().unwrap()).unwrap();
         assert_eq!(state.pins.len(), 33);
         assert!(state.is_pinned("original", "main"));
-        assert_eq!(state.recent.len(), 4);
+        assert!(state.recent.is_empty());
         for index in 0..4 {
             let worker = index.to_string();
             for session in 0..8 {
                 assert!(state.is_pinned(&worker, &session.to_string()));
             }
-            assert!(
-                state
-                    .recent
-                    .iter()
-                    .any(|recent| { recent.worker == worker && recent.session == "main" })
-            );
         }
         assert!(
             std::fs::symlink_metadata(alias)
@@ -644,25 +602,24 @@ mod tests {
     }
 
     #[test]
-    fn recents_move_to_front_deduplicate_and_cap() {
-        let mut state = State::default();
-        state.record_recent("a", "one");
-        state.record_recent("b", "one");
-        state.record_recent("a", "two");
-        state.recent.push(state.recent[1].clone());
-        state.recent.push(state.recent[2].clone());
-        state.record_recent("a", "one");
-        let entries: Vec<_> = state
-            .recent
-            .iter()
-            .map(|recent| (recent.worker.as_str(), recent.session.as_str()))
-            .collect();
-        assert_eq!(entries, [("a", "one"), ("a", "two"), ("b", "one")]);
-        for index in 0..RECENT_LIMIT + 2 {
-            state.record_recent("local", &index.to_string());
-        }
-        assert_eq!(state.recent.len(), RECENT_LIMIT);
-        assert_eq!(state.recent.first().unwrap().session, "11");
-        assert_eq!(state.recent.last().unwrap().session, "2");
+    fn legacy_recents_survive_pin_updates_without_becoming_pins() {
+        let dir = TempDir::new();
+        let path = dir.path().join("state.json");
+        let path = path.to_str().unwrap();
+        let raw = r#"{"pins":[],"recent":[{"computer":"old","session":"work"}]}"#;
+        std::fs::write(path, raw).unwrap();
+        let original = load_state(path).unwrap();
+        let saved = update_state(
+            path,
+            StateChange::TogglePin {
+                worker: "new",
+                session: "main",
+            },
+        )
+        .unwrap();
+        assert_eq!(saved.recent, original.recent);
+        assert!(!saved.is_pinned("old", "work"));
+        assert!(saved.is_pinned("new", "main"));
+        assert_eq!(load_state(path).unwrap(), saved);
     }
 }
