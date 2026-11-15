@@ -832,6 +832,37 @@ fn filter_selects_exact_computer_and_session() {
 }
 
 #[test]
+fn clearing_a_filter_keeps_an_accepted_row_and_cancelling_restores_the_earlier_one() {
+    let workers = vec![worker("a", "host-a"), worker("b", "host-b")];
+    let inventories = vec![
+        ready(&workers[0], vec![session("$0", "work")]),
+        ready(
+            &workers[1],
+            vec![session("$1", "other"), session("$2", "Straße")],
+        ),
+    ];
+    let scenarios: Vec<(&str, Vec<&str>, &str)> = vec![
+        ("cancelled while typing", vec!["/", "strasse", "esc"], "$0"),
+        ("accepted", vec!["/", "strasse", "enter", "esc"], "$2"),
+        (
+            "accepted and opened",
+            vec!["/", "strasse", "enter", "enter", "esc"],
+            "$2",
+        ),
+    ];
+    for (name, keys, expected) in scenarios {
+        let mut harness = Harness::new(workers.clone(), inventories.clone());
+        harness.press(&keys);
+        assert!(harness.picker.filter.is_empty(), "{name}");
+        assert_eq!(
+            harness.picker.selected_session().unwrap().1.id,
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn unified_list_includes_sessions_and_computers_without_sessions() {
     let up = worker("up", "has-work");
     let empty = remote("empty", "no-work", "empty.tail");
