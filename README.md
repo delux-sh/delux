@@ -4,6 +4,10 @@
 
 tmux keeps your work running. Delux helps you find it again: browse local and remote sessions in one list, preview what's on screen, and open a session in the right-hand panel. Switch back to the list without disconnecting.
 
+![Delux browsing three computers' tmux sessions, opening one in the right-hand panel, and pinning another](docs/demo.gif)
+
+*Recorded in a demo environment with synthetic computers and sessions.*
+
 Delux uses SSH and your existing tmux sessions. It can find computers through [Tailscale](https://tailscale.com), or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
 
 ## Install
