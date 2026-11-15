@@ -24,7 +24,7 @@ use ratatui::crossterm::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -880,16 +880,16 @@ impl Picker {
             return None;
         }
         if self.terminal_visible {
-            Some("Tab to interact with the terminal and scroll.")
+            Some("Press Tab to interact")
         } else if self.preview_visible {
             Some(
                 if self
                     .current_row()
                     .is_some_and(|row| self.session(row).is_some())
                 {
-                    "Preview only: Enter to attach and scroll."
+                    "Press Enter to attach"
                 } else {
-                    "Select a session to attach and scroll."
+                    "Select a session first"
                 },
             )
         } else {
@@ -1577,7 +1577,35 @@ impl Picker {
                 self.render_preview(frame, area);
             }
         }
-        // Hints use the existing footer and the panel bounds from this frame.
+        if self.show_scroll_hint
+            && let Some(hint) = self.inactive_scroll_hint()
+        {
+            let area = self.terminal_area;
+            if area.width >= 4 && area.height >= 3 {
+                let width = (hint.width() as u16 + 6).min(area.width);
+                let height = 5.min(area.height);
+                let overlay = Rect::new(
+                    area.x + (area.width - width) / 2,
+                    area.y + (area.height - height) / 2,
+                    width,
+                    height,
+                );
+                let block = Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(tint.accent())
+                    .title(" Scroll ")
+                    .padding(Padding::new(1, 1, u16::from(height >= 5), 0));
+                frame.render_widget(ratatui::widgets::Clear, overlay);
+                frame.render_widget(
+                    Paragraph::new(hint)
+                        .style(tint.heading())
+                        .centered()
+                        .wrap(Wrap { trim: true })
+                        .block(block),
+                    overlay,
+                );
+            }
+        }
         frame.render_widget(Paragraph::new(self.footer_line()), footer);
     }
 
@@ -1730,11 +1758,6 @@ impl Picker {
     }
 
     fn footer_line(&self) -> Line<'static> {
-        if self.show_scroll_hint
-            && let Some(hint) = self.inactive_scroll_hint()
-        {
-            return Line::styled(hint, self.tint.accent());
-        }
         let hints: &[(&str, &str)] = if self.terminal_focused
             && self
                 .active
@@ -4468,7 +4491,14 @@ mod tests {
                 assert!(harness.picker.show_scroll_hint);
                 assert!(!harness.picker.terminal_focused);
                 let view = harness.rendered(width, height);
-                assert!(view.lines().last().unwrap().contains("Tab"));
+                let middle = usize::from(area.y + area.height / 2);
+                assert!(
+                    view.lines()
+                        .skip(middle.saturating_sub(1))
+                        .take(3)
+                        .any(|line| line.contains("Tab"))
+                );
+                assert!(view.lines().last().unwrap().contains("list focused"));
                 assert_eq!(harness.picker.terminal_area, area);
                 assert!(harness.launched().is_empty());
             }
@@ -4496,6 +4526,7 @@ mod tests {
                 let selection = harness.picker.selection.clone();
                 let area = harness.picker.terminal_area;
                 harness.picker.notice = "Existing diagnostic".into();
+                let before = harness.rendered(width, height);
                 let event = wheel(MouseEventKind::ScrollDown, area.x, area.y);
                 assert!(harness.picker.update(Message::Mouse(event)).is_none());
                 assert!(harness.picker.show_scroll_hint);
@@ -4504,7 +4535,15 @@ mod tests {
                 assert_eq!(harness.picker.active.is_some(), connected);
                 assert!(harness.launched().is_empty());
                 let view = harness.rendered(width, height);
-                assert!(view.lines().last().unwrap().contains("Enter"));
+                let area = harness.picker.terminal_area;
+                let middle = usize::from(area.y + area.height / 2);
+                assert!(
+                    view.lines()
+                        .skip(middle.saturating_sub(1))
+                        .take(3)
+                        .any(|line| line.contains("Enter"))
+                );
+                assert_eq!(view.lines().last(), before.lines().last());
                 assert!(view.contains("Existing diagnostic"));
                 harness.press(&["esc"]);
                 assert!(!harness.picker.show_scroll_hint);

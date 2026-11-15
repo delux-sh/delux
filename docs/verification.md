@@ -2,11 +2,13 @@
 
 ## Inactive-panel scroll guidance
 
-The right panel distinguishes Preview (Enter to attach), Connected (Tab to interact), and Active (Shift-Tab for the list). Inactive titles and borders are muted without dimming session output. Wheel input over an inactive panel shows contextual guidance in the existing footer; it does not attach, change focus, overwrite diagnostics, or add a row that resizes the terminal.
+The right panel distinguishes Preview (Enter to attach), Connected (Tab to interact), and Active (Shift-Tab for the list). Inactive titles and borders are muted without dimming session output. Wheel input over an inactive panel shows a centered, bordered message over that panel: Press Enter to attach or Press Tab to interact. It does not attach, change focus, overwrite diagnostics or the footer, or resize the terminal. A keypress dismisses it.
 
 All 49 picker tests and four preview-renderer tests passed, along with formatting, Clippy with warnings denied, and the native macOS ARM64 release build. Regression coverage includes previewing a different session while another client remains connected, unattached previews, filtering, pointer bounds, sidebar navigation, and unchanged terminal geometry.
 
 A real-PTY check with two isolated tmux sessions verified all three visible states, injected mouse-wheel hints, explicit attachment/focus, retention of the original client while browsing another preview, hint dismissal, side-by-side and stacked layouts, and preservation of both sessions after quitting. Temporary fixtures were removed. Physical trackpad behavior and remote SSH were not separately exercised. The four-platform packaging results below predate this UI change.
+
+The centered-message follow-up passed 48 picker checks and, after correcting an assertion that assumed every footer says “list focused,” the preview/footer regression passed on rerun. Clippy with warnings denied and the native release build passed. Real-PTY checks observed complete synchronized frames and verified centered messages in side-by-side and stacked layouts, unchanged footer and pane dimensions, key dismissal, and session preservation.
 
 ## 0.1.0 Homebrew preparation
 
