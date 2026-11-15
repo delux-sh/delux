@@ -406,8 +406,17 @@ mod tests {
         );
         assert!(unsafe_mode.is_dir());
         drop(listener);
-        sweep_stale_directories(root.path(), uid);
-        assert!(!stale.exists());
+        // Tests run in parallel: a child another test forked keeps a copy of
+        // the listener until it execs, so the socket can look live briefly.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            sweep_stale_directories(root.path(), uid);
+            if !stale.exists() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "stale directory survived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert!(current.is_dir());
     }
 
