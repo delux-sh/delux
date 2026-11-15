@@ -69,7 +69,10 @@ impl Picker {
         if self.filtering {
             match key.code {
                 KeyCode::Enter => {
+                    // Accepting the filter commits its row; only cancelling
+                    // returns to the row selected before filtering.
                     self.filtering = false;
+                    self.remember();
                     return None;
                 }
                 KeyCode::Esc => {
