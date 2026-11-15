@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::crt::Signal;
 use crate::state::{Pin, load_state, update_state};
