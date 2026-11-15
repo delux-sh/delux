@@ -135,7 +135,6 @@ jobs:
           brew tap-new --no-git delux-ci/release
           scripts/homebrew-formula.sh "$VERSION" dist/SHA256SUMS "file://$GITHUB_WORKSPACE/dist" \
             > "$(brew --repository delux-ci/release)/Formula/delux.rb"
-          brew trust delux-ci/release
           brew install delux-ci/release/delux
       - name: Run formula test and strict audit
         run: |

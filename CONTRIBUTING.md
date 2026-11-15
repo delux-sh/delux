@@ -89,7 +89,7 @@ scripts/homebrew-formula.sh 0.1.0 release-downloads/SHA256SUMS > /path/to/homebr
 
 Use a fresh download directory and create the tap's `Formula/` directory if needed. Substitute the approved version for later releases. The generator requires exactly one valid checksum for each of the four targets; never guess checksums or substitute dry-run hashes for published ones. Its optional `BASE_URL` (including `file://`) is for prepublication archive testing, not the published formula.
 
-Review the generated URLs, checksums, dependency declarations, and GPL-3.0-or-later license. In a clean Homebrew environment, tap the reviewed repository and run `brew trust --formula delux-sh/tap/delux` before installing it from the published URLs. Install with its dependencies, then run `brew test delux` and `brew audit --strict delux`; do not bypass dependency resolution. Publish the tap and its formula only with separate maintainer approval, then update installation documentation to say downloads and Homebrew are available.
+Review the generated URLs, checksums, dependency declarations, and GPL-3.0-or-later license. In a clean Homebrew environment, install the reviewed formula from the published URLs with `brew install delux-sh/tap/delux`. The canonical fully qualified name grants [trust only to that formula](https://docs.brew.sh/Tap-Trust#installing-from-a-tap). Install with its dependencies, then run `brew test delux` and `brew audit --strict delux`; do not bypass dependency resolution. Publish the tap and its formula only with separate maintainer approval, then update installation documentation to say downloads and Homebrew are available.
 
 ## Pull requests
 

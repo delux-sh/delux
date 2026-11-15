@@ -11,12 +11,8 @@ Delux uses SSH and your existing tmux sessions. It can find computers through [T
 For macOS and Linux. **0.1.0 binary downloads and Homebrew installation are pending publication**, not available yet. After the release and public tap are published:
 
 ```sh
-brew tap delux-sh/tap
-brew trust --formula delux-sh/tap/delux
 brew install delux-sh/tap/delux
 ```
-
-Current Homebrew requires explicit trust before loading a third-party formula. The trust command above authorizes only Delux, not every formula in the tap.
 
 The release archives will cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
 
@@ -47,7 +43,9 @@ delux attach dev-box project   # full-terminal attachment, without the picker
 
 If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--host` and add `--no-local` to show only remote computers. See `delux --help` for all options.
 
-`delux list` prints available results even if a computer fails, but exits with status 1.
+Automatic Tailscale discovery includes only untagged, unshared computers whose known owner matches this computer's known owner. Add other computers explicitly with configured `hosts` or `--host`.
+
+`delux list` prints session columns aligned by display width, with a blank line between computers. It prints available results even if a computer fails, but exits with status 1. Use `--json` for scripts.
 
 ### In the picker
 
@@ -59,6 +57,7 @@ If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--
 | `shift-tab` | Return to the list without disconnecting |
 | `/` | Filter computers and sessions |
 | `f` | Pin a session |
+| `p` | Cycle the session tint |
 | `u` | Set the SSH user |
 | `r` | Rescan |
 | `q` | Quit |

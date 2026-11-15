@@ -49,10 +49,8 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
 /// A visible preview older than this is refetched while it stays selected.
 const PREVIEW_REFRESH: Duration = Duration::from_secs(1);
-/// Recent sessions shown in the pinned section, after explicit pins.
-const PINNED_RECENTS: usize = 5;
-/// How long the preview shows static after the channel changes.
-const CHANNEL_STATIC: Duration = Duration::from_millis(150);
+/// How long the preview shows static after the selection changes.
+const SELECTION_STATIC: Duration = Duration::from_millis(150);
 // Request wheel/button reports, not the unimplemented all-motion tracking mode.
 const ENABLE_MOUSE: &str = "\x1b[?1000h\x1b[?1006h";
 const DISABLE_MOUSE: &str = "\x1b[?1000l\x1b[?1006l";
@@ -78,7 +76,7 @@ struct Services {
     sharing_active: Box<dyn Fn(&str) -> bool>,
     save_mapping: SaveMapping,
     update_state: UpdateState,
-    /// Unix seconds, for activity ages and recents.
+    /// Unix seconds, for activity ages.
     now: Box<dyn Fn() -> i64>,
 }
 
@@ -97,8 +95,6 @@ struct Row {
     kind: RowKind,
     entry: usize,
     session: usize,
-    /// Pinned rows: a favorite rather than a recent session.
-    favorite: bool,
 }
 
 impl Row {
@@ -107,7 +103,6 @@ impl Row {
             kind,
             entry,
             session,
-            favorite: false,
         }
     }
 }
@@ -131,6 +126,29 @@ struct Entry {
 }
 
 impl Entry {
+    fn update_inventory(&mut self, mut inventory: Inventory, reorder: bool) {
+        if reorder || self.inventory.is_none() {
+            inventory
+                .sessions
+                .sort_by_key(|session| std::cmp::Reverse(session.activity));
+        } else {
+            let positions: HashMap<&str, usize> = self
+                .sessions()
+                .iter()
+                .enumerate()
+                .map(|(index, session)| (session.id.as_str(), index))
+                .collect();
+            // Existing sessions keep their places; new sessions append in scan order.
+            inventory.sessions.sort_by_key(|session| {
+                positions
+                    .get(session.id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        self.inventory = Some(inventory);
+    }
+
     fn status(&self) -> Status {
         self.inventory
             .as_ref()
@@ -285,6 +303,8 @@ struct Picker {
     generation: u64,
     scan_cancel: Option<Cancel>,
     scanning: bool,
+    reorder_on_scan: bool,
+    pending: HashSet<String>,
     frame: usize,
     entries: Vec<Entry>,
     warning: String,
@@ -335,6 +355,8 @@ impl Picker {
             generation: 0,
             scan_cancel: None,
             scanning: false,
+            reorder_on_scan: false,
+            pending: HashSet::new(),
             frame: 0,
             entries: Vec::new(),
             warning: String::new(),
@@ -372,7 +394,7 @@ impl Picker {
         }
     }
 
-    fn rescan(&mut self) -> Command {
+    fn rescan(&mut self, reorder: bool) -> Command {
         if let Some(cancel) = self.scan_cancel.take() {
             cancel.cancel();
         }
@@ -384,6 +406,7 @@ impl Picker {
         self.scan_cancel = Some(cancel.clone());
         self.generation += 1;
         self.scanning = true;
+        self.reorder_on_scan = reorder;
         Command::Discover {
             generation: self.generation,
             cancel,
@@ -441,17 +464,34 @@ impl Picker {
                     }
                 };
                 self.warning = warning;
-                self.entries = workers
+                self.pending = workers.iter().map(|worker| worker.key.clone()).collect();
+                let mut discovered: HashMap<&str, &Worker> = workers
                     .iter()
-                    .cloned()
-                    .map(|worker| Entry {
-                        worker,
-                        inventory: None,
-                    })
+                    .map(|worker| (worker.key.as_str(), worker))
                     .collect();
+                self.entries.retain_mut(|entry| {
+                    let Some(worker) = discovered.remove(entry.worker.key.as_str()) else {
+                        return false;
+                    };
+                    if entry.worker.destination != worker.destination {
+                        entry.inventory = None;
+                    }
+                    entry.worker = worker.clone();
+                    true
+                });
+                self.entries.extend(
+                    workers
+                        .iter()
+                        .filter(|worker| discovered.contains_key(worker.key.as_str()))
+                        .map(|worker| Entry {
+                            worker: worker.clone(),
+                            inventory: None,
+                        }),
+                );
                 self.rebuild();
                 if workers.is_empty() {
                     self.scanning = false;
+                    self.reorder_on_scan = false;
                 } else if let Some(cancel) = &self.scan_cancel {
                     return Some(Command::Scan {
                         generation,
@@ -469,12 +509,20 @@ impl Picker {
                 }
                 let Some(inventory) = inventory else {
                     self.scanning = false;
+                    self.reorder_on_scan = false;
+                    self.pending.clear();
                     return None;
                 };
-                if let Some(entry) = self.entries.iter_mut().find(|entry| {
-                    entry.worker.key == inventory.worker.key && entry.inventory.is_none()
-                }) {
-                    entry.inventory = Some(inventory);
+                if self.pending.remove(&inventory.worker.key)
+                    && let Some(entry) = self.entries.iter_mut().find(|entry| {
+                        entry.worker.key == inventory.worker.key
+                            && entry.worker.destination == inventory.worker.destination
+                    })
+                {
+                    entry.update_inventory(inventory, self.reorder_on_scan);
+                }
+                if self.reorder_on_scan {
+                    self.entries.sort_by_key(Entry::rank);
                 }
                 self.rebuild();
             }
@@ -561,7 +609,7 @@ impl Picker {
                         "Attachment ended with status {code}; no replacement session was created."
                     ),
                 };
-                return Some(self.rescan());
+                return Some(self.rescan(false));
             }
             Message::Checked(inventory) => {
                 if !self.entries.iter().any(|entry| {
@@ -569,7 +617,7 @@ impl Picker {
                         && entry.worker.destination == inventory.worker.destination
                 }) {
                     self.notice = "Computer configuration changed; rescanning.".into();
-                    return Some(self.rescan());
+                    return Some(self.rescan(false));
                 }
                 let name = display(&inventory.worker.name, 80);
                 let session = (inventory.status == Status::Ready)
@@ -581,12 +629,11 @@ impl Picker {
                     (None, status) => format!("{name}: {status}"),
                 };
                 let worker = inventory.worker.key.clone();
-                for entry in &mut self.entries {
-                    if entry.worker.key == worker
+                if let Some(entry) = self.entries.iter_mut().find(|entry| {
+                    entry.worker.key == worker
                         && entry.worker.destination == inventory.worker.destination
-                    {
-                        entry.inventory = Some(inventory.clone());
-                    }
+                }) {
+                    entry.update_inventory(inventory, false);
                 }
                 // Do not steal selection from someone browsing during sign-in.
                 if let Some(session) = session
@@ -626,7 +673,7 @@ impl Picker {
         let previewing = self.preview_visible && !self.shows_terminal();
         if previewing && self.selection != self.screen_selection {
             self.screen_selection = self.selection.clone();
-            self.static_until = Some(now + CHANNEL_STATIC);
+            self.static_until = Some(now + SELECTION_STATIC);
         }
         let selected = if previewing {
             self.selected_session()
@@ -801,7 +848,7 @@ impl Picker {
             }
             KeyCode::Char('r') => {
                 self.notice.clear();
-                return Some(self.rescan());
+                return Some(self.rescan(true));
             }
             KeyCode::Char('q') => self.quit(),
             KeyCode::Enter => return self.activate(),
@@ -1073,7 +1120,7 @@ impl Picker {
                     display(&input.name, 80),
                     display(&destination, 200)
                 );
-                return Some(self.rescan());
+                return Some(self.rescan(false));
             }
             KeyCode::Char(ch)
                 if !key
@@ -1158,7 +1205,7 @@ impl Picker {
             }
             Err(error) => {
                 self.state.apply(change);
-                self.state_error = format!("Could not save pins and recents: {error}");
+                self.state_error = format!("Could not save pins: {error}");
             }
         }
     }
@@ -1265,22 +1312,7 @@ impl Picker {
                 if let Some(found) = self.resolve(&pin.worker, &pin.session)
                     && seen.insert(found)
                 {
-                    pinned.push(Row {
-                        favorite: true,
-                        ..Row::new(RowKind::Pinned, found.0, found.1)
-                    });
-                }
-            }
-            let mut recents = 0;
-            for recent in &self.state.recent {
-                if recents == PINNED_RECENTS {
-                    break;
-                }
-                if let Some(found) = self.resolve(&recent.worker, &recent.session)
-                    && seen.insert(found)
-                {
                     pinned.push(Row::new(RowKind::Pinned, found.0, found.1));
-                    recents += 1;
                 }
             }
             if !pinned.is_empty() {
@@ -1288,9 +1320,7 @@ impl Picker {
                 self.rows.extend(pinned);
             }
         }
-        let mut computers: Vec<usize> = (0..self.entries.len()).collect();
-        computers.sort_by_key(|&i| self.entries[i].rank());
-        for i in computers {
+        for i in 0..self.entries.len() {
             let entry = &self.entries[i];
             let worker_match = query.is_empty()
                 || matches(&entry.worker.name)
@@ -1302,11 +1332,10 @@ impl Picker {
                 }
                 continue;
             }
-            let mut visible: Vec<usize> = (0..sessions.len())
+            let visible: Vec<usize> = (0..sessions.len())
                 .filter(|&j| worker_match || matches(&sessions[j].name))
                 .collect();
             if !visible.is_empty() {
-                visible.sort_by_key(|&j| std::cmp::Reverse(sessions[j].activity));
                 self.rows.push(Row::new(RowKind::Group, i, 0));
                 self.rows.extend(
                     visible
@@ -1362,13 +1391,6 @@ impl Picker {
                 self.terminal_focused = true;
                 return None;
             }
-            self.persist_state(StateChange::RecordRecent {
-                worker: &worker.key,
-                session: &session.name,
-            });
-            // The list stays beside the client, so show the new recent now.
-            self.remember();
-            self.rebuild();
             self.notice.clear();
             return Some(Command::Launch(Choice {
                 worker,
@@ -1606,7 +1628,7 @@ impl Picker {
                 );
             }
         }
-        frame.render_widget(Paragraph::new(self.footer_line()), footer);
+        frame.render_widget(Paragraph::new(self.footer_line(footer.width)), footer);
     }
 
     fn render_sign_in(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -1740,11 +1762,7 @@ impl Picker {
             ));
         }
         if self.scanning {
-            let probed = self
-                .entries
-                .iter()
-                .filter(|entry| entry.inventory.is_some())
-                .count();
+            let probed = self.entries.len().saturating_sub(self.pending.len());
             spans.push(Span::styled(
                 format!(
                     " · {} probing {probed}/{}",
@@ -1757,7 +1775,7 @@ impl Picker {
         Line::from(spans)
     }
 
-    fn footer_line(&self) -> Line<'static> {
+    fn footer_line(&self, width: u16) -> Line<'static> {
         let hints: &[(&str, &str)] = if self.terminal_focused
             && self
                 .active
@@ -1795,17 +1813,16 @@ impl Picker {
             .is_some_and(|row| row.kind == RowKind::Computer)
         {
             &[
-                ("↑↓", "move"),
                 ("enter", "connect"),
-                ("u", "ssh user"),
-                ("/", "filter"),
-                ("p", "tint"),
-                ("r", "rescan"),
                 ("q", "quit"),
+                ("/", "filter"),
+                ("u", "ssh user"),
+                ("r", "rescan"),
+                ("↑↓", "move"),
+                ("p", "tint"),
             ]
         } else {
             &[
-                ("↑↓", "move"),
                 (
                     if self.active.is_some() {
                         "enter"
@@ -1814,29 +1831,40 @@ impl Picker {
                     },
                     "open",
                 ),
+                ("q", "quit"),
                 ("/", "filter"),
                 ("f", "pin"),
+                ("r", "rescan"),
+                ("↑↓", "move"),
                 ("u", "ssh user"),
                 ("p", "tint"),
-                ("r", "rescan"),
-                ("q", "quit"),
             ]
         };
-        let mut spans = vec![Span::raw(" ")];
-        if self.active.is_some()
+        let mut spans = Vec::new();
+        let mut used = 0;
+        let focus = (self.active.is_some()
             && !self.terminal_focused
             && self.input.is_none()
-            && !self.filtering
-        {
-            spans.push(Span::styled("tab", self.tint.accent()));
-            spans.push(Span::styled(" terminal · list focused  ", theme::muted()));
-        }
-        for (i, (key, description)) in hints.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw("  "));
+            && !self.filtering)
+            .then_some((
+                "tab",
+                if width < 80 {
+                    "terminal"
+                } else {
+                    "terminal · list focused"
+                },
+            ));
+        // Hints are priority ordered. Never leave a partial key or description.
+        for (key, description) in focus.iter().chain(hints.iter()) {
+            let gap = if spans.is_empty() { 1 } else { 2 };
+            let needed = gap + key.width() + 1 + description.width();
+            if used + needed > usize::from(width) {
+                continue;
             }
+            spans.push(Span::raw(if spans.is_empty() { " " } else { "  " }));
             spans.push(Span::styled(*key, self.tint.accent()));
             spans.push(Span::styled(format!(" {description}"), theme::muted()));
+            used += needed;
         }
         Line::from(spans)
     }
@@ -1870,7 +1898,6 @@ impl Picker {
     fn screen(&self) -> Screen {
         let Some(row) = self.current_row() else {
             return Screen {
-                channel: None,
                 label: "standby".into(),
                 detail: String::new(),
                 lines: vec![Line::styled("Select a session to tune in.", theme::muted())],
@@ -1884,11 +1911,6 @@ impl Picker {
                 .preview_inflight
                 .as_ref()
                 .is_some_and(|(inflight, _)| *inflight == key);
-            // Channels number the session rows from the top of the list.
-            let channel = self.rows[..=self.cursor.unwrap_or_default()]
-                .iter()
-                .filter(|row| matches!(row.kind, RowKind::Session | RowKind::Pinned))
-                .count();
             let cached = self
                 .cached_preview(&key, session)
                 .map(|entry| &entry.result);
@@ -1908,7 +1930,6 @@ impl Picker {
                 None => (Vec::new(), Signal::Tuning),
             };
             return Screen {
-                channel: Some(channel),
                 label: format!(
                     "Preview · Enter to attach · {} / {}",
                     entry.worker.name, session.name
@@ -1965,7 +1986,6 @@ impl Picker {
             }
         };
         Screen {
-            channel: None,
             label,
             detail: String::new(),
             lines,
@@ -1973,9 +1993,9 @@ impl Picker {
         }
     }
 
-    /// Rows are compact (names, plus a short activity age) when the preview is
-    /// shown, because the preview carries each session's details.
+    /// Use names and short ages beside a preview or in a narrow list.
     fn render_rows(&self, compact: bool, width: u16, inactive: bool) -> Vec<ListItem<'static>> {
+        let compact = compact || width < 80;
         let content_width = usize::from(width.saturating_sub(4));
         let name_width = if compact {
             content_width.saturating_sub(8)
@@ -2062,9 +2082,8 @@ impl Picker {
                         spans
                     }
                     RowKind::Pinned => {
-                        let mark = if row.favorite { "★ " } else { "↺ " };
                         let mut spans =
-                            vec![Span::styled(mark, heading), Span::styled(padded(row), text)];
+                            vec![Span::styled("★ ", heading), Span::styled(padded(row), text)];
                         let detail = self.session(row).map(|session| {
                             Span::styled(format!("  {}", details(session)), secondary)
                         });
@@ -2586,7 +2605,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
     let guard = TerminalGuard::enter().map_err(|error| error.to_string())?;
     let mut terminal = fresh_terminal().map_err(|error| error.to_string())?;
     let (sender, receiver) = mpsc::channel();
-    let initial = picker.rescan();
+    let initial = picker.rescan(true);
     execute_command(initial, &mut picker, &sender, &mut terminal, &guard)?;
     let mut tick = Instant::now();
     loop {
@@ -2616,7 +2635,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
             }
             tick = Instant::now();
         }
-        // Tick first so a channel change shows static on the very next frame.
+        // Tick first so a selection change shows static on the very next frame.
         if let Some(command) = picker.update(Message::Tick(Instant::now())) {
             execute_command(command, &mut picker, &sender, &mut terminal, &guard)?;
         }
@@ -2771,7 +2790,7 @@ mod tests {
                 now: Box::new(|| NOW),
             };
             let mut picker = Picker::new(Cancel::new(), services, state);
-            let initial = picker.rescan();
+            let initial = picker.rescan(true);
             let mut harness = Self { picker, effects };
             harness.drive(Some(initial));
             assert!(!harness.picker.scanning);
@@ -3000,7 +3019,15 @@ mod tests {
     #[test]
     fn embedded_panel_stays_visible_when_focused_at_small_sizes() {
         let mut harness = terminal_harness(&["/bin/cat"]);
-        for (width, height) in [(120, 30), (80, 24), (40, 12), (10, 5), (2, 2), (1, 1)] {
+        for (width, height) in [
+            (120, 30),
+            (80, 24),
+            (60, 24),
+            (40, 12),
+            (10, 5),
+            (2, 2),
+            (1, 1),
+        ] {
             harness.buffer(width, height);
             assert!(harness.picker.terminal_visible, "{width}x{height}");
             assert!(harness.picker.terminal_area.width <= width);
@@ -3025,8 +3052,8 @@ mod tests {
         harness.buffer(70, 40);
         assert!(harness.picker.terminal_visible);
         let area = harness.picker.terminal_area;
-        // A rescan collapses the list to probing computers until results return.
-        let Command::Discover { generation, cancel } = harness.picker.rescan() else {
+        // A refresh keeps the live client's geometry while inventory is pending.
+        let Command::Discover { generation, cancel } = harness.picker.rescan(false) else {
             panic!("expected discovery");
         };
         let result = (harness.picker.services.discover)(&cancel);
@@ -3609,6 +3636,7 @@ mod tests {
         assert!(picker.entries[0].inventory.is_some());
         let ready = ready(&worker, vec![session("$9", "late")]);
         picker.entries[0].inventory = None;
+        picker.pending.insert(worker.key.clone());
         picker.update(Message::Inventory {
             generation: superseded,
             inventory: Some(ready.clone()),
@@ -3650,6 +3678,171 @@ mod tests {
         assert_eq!(launched.len(), 1);
         assert_eq!(launched[0].worker.key, "b");
         assert_eq!(launched[0].session.as_ref().unwrap().id, "$1");
+    }
+
+    #[test]
+    fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
+        fn assert_order(harness: &mut Harness, names: &[&str]) {
+            let view = harness.rendered(60, 24);
+            let positions: Vec<_> = names
+                .iter()
+                .map(|name| view.find(name).unwrap_or_else(|| panic!("{name}: {view}")))
+                .collect();
+            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{view}");
+        }
+
+        let alpha = worker("a", "alpha");
+        let beta = worker("b", "beta");
+        let gamma = remote("c", "gamma", "gamma.example");
+        let delta = remote("d", "delta", "delta.example");
+        let mut first = session("$1", "first");
+        first.activity = 20;
+        let mut second = session("$2", "second");
+        second.activity = 10;
+        let mut harness = Harness::new(
+            vec![alpha.clone(), beta.clone(), gamma.clone()],
+            vec![
+                ready(
+                    &alpha,
+                    vec![second.clone(), first.clone(), session("$3", "removed")],
+                ),
+                ready(&beta, vec![]),
+                failed(&gamma, Status::AuthRequired, "Sign in"),
+            ],
+        );
+        assert_order(
+            &mut harness,
+            &["alpha", "first", "second", "removed", "gamma", "beta"],
+        );
+        harness.press(&["down"]);
+        let selection = harness.picker.selection.clone();
+        // Preview activity updates must not reshuffle a subsequent row rebuild.
+        harness.picker.update(Message::Preview {
+            generation: harness.picker.generation,
+            destination: None,
+            key: ("a".into(), "$2".into()),
+            session: second.clone(),
+            result: Ok(crate::tmux::Preview {
+                text: "new output".into(),
+                activity: 40,
+                output: 40,
+            }),
+        });
+        harness.press(&["/", "second", "esc"]);
+        assert_order(
+            &mut harness,
+            &["first", "second", "removed", "gamma", "beta"],
+        );
+        assert_eq!(harness.picker.selection, selection);
+        // Status changes expand a computer in place instead of promoting it.
+        harness.picker.update(Message::Checked(ready(
+            &beta,
+            vec![session("$0", "beta-work")],
+        )));
+        assert_order(&mut harness, &["alpha", "gamma", "beta", "beta-work"]);
+        assert_eq!(harness.picker.selection, selection);
+
+        second.activity = 40;
+        let mut added = session("$4", "added");
+        added.activity = 30;
+        let workers = vec![beta.clone(), delta.clone(), alpha.clone()];
+        let inventories = vec![
+            failed(&delta, Status::AuthRequired, "Sign in"),
+            ready(&beta, vec![]),
+            ready(&alpha, vec![added, second, first]),
+        ];
+        harness.picker.services.discover = Arc::new(move |_| Ok((workers.clone(), String::new())));
+        harness.picker.services.scan = Arc::new(move |_, _| {
+            let (sender, receiver) = mpsc::channel();
+            for inventory in &inventories {
+                sender.send(inventory.clone()).unwrap();
+            }
+            receiver
+        });
+        // Detach drives the same discovery/scan path as an automatic refresh.
+        let next = harness
+            .picker
+            .update(Message::Attached(Ok(AttachOutcome::Exited(0))));
+        harness.drive(next);
+        assert_order(
+            &mut harness,
+            &["alpha", "first", "second", "added", "beta", "delta"],
+        );
+        let view = harness.rendered(60, 24);
+        assert!(
+            !view.contains("gamma") && !view.contains("removed"),
+            "{view}"
+        );
+        assert_eq!(harness.picker.selection, selection);
+        harness.press(&["r"]);
+        assert_order(
+            &mut harness,
+            &["alpha", "second", "added", "first", "delta", "beta"],
+        );
+        assert_eq!(harness.picker.selection, selection);
+    }
+
+    #[test]
+    fn sixty_column_picker_uses_concise_rows_and_complete_priority_hints() {
+        let computer = remote("a", "studio", "a-very-long-ssh-destination.example");
+        let mut work = session("$0", "project");
+        work.output = NOW - 120;
+        work.command = "long-command-that-must-not-be-chopped".into();
+        work.path = "/a/long/working/directory".into();
+        let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![work])]);
+        let view = harness.rendered(60, 24);
+        assert!(view.contains("project    2m"), "{view}");
+        assert!(
+            !view.contains("long-command") && !view.contains("a-very-long"),
+            "{view}"
+        );
+        assert!(!view.contains("CH "), "{view}");
+        assert_eq!(
+            view.lines().last().unwrap(),
+            " enter/tab open  q quit  / filter  f pin  r rescan  ↑↓ move"
+        );
+        // At every width, the widget receives complete hints, not clipped spans.
+        for width in 1..=80 {
+            let line = harness.picker.footer_line(width);
+            assert!(line.width() <= usize::from(width));
+            assert!(line.spans.len().is_multiple_of(3));
+        }
+        harness.press(&["/", "proj"]);
+        let view = harness.rendered(60, 24);
+        assert_eq!(
+            view.lines().last().unwrap(),
+            " type to filter  ↑↓ move  enter done  esc clear"
+        );
+    }
+
+    #[test]
+    fn sixty_column_focus_keeps_terminal_visible() {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        let view = harness.rendered(60, 24);
+        assert!(harness.picker.terminal_visible && harness.picker.list_area.is_empty());
+        assert!(view.lines().last().unwrap().contains("shift-tab"));
+    }
+
+    #[test]
+    fn sixty_column_sign_in_keeps_its_hints_and_layouts() {
+        let mut harness = sign_in_harness();
+        let view = harness.rendered(60, 24);
+        assert!(harness.picker.terminal_visible);
+        let footer = view.lines().last().unwrap();
+        assert!(footer.contains("shift-tab") && footer.contains("ctrl-c"));
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.picker.active = None;
+        harness.press(&["enter"]);
+        let view = harness.rendered(60, 24);
+        assert!(!harness.picker.terminal_visible && harness.picker.list_area.is_empty());
+        assert!(
+            view.contains("Remote username:") && view.contains("Esc    Back"),
+            "{view}"
+        );
+        let footer = view.lines().last().unwrap();
+        assert!(footer.contains("ctrl-u") && footer.ends_with("esc back"));
     }
 
     #[test]
@@ -3706,7 +3899,7 @@ mod tests {
             let parent = Cancel::new();
             let mut harness = Harness::new(vec![], vec![]);
             harness.picker.cancel = parent.child();
-            let _ = harness.picker.rescan();
+            let _ = harness.picker.rescan(false);
             let scan = harness.picker.scan_cancel.as_ref().unwrap().clone();
             let preview = harness.picker.cancel.child();
             harness.picker.preview_inflight = Some((("host".into(), "$0".into()), preview.clone()));
@@ -3793,10 +3986,10 @@ mod tests {
         harness.press(&["down"]);
         let later = start + Duration::from_secs(30);
         harness.tick(later);
-        // Changing channel shows static first, then the tuning screen.
+        // Changing selection shows static first, then the tuning screen.
         let view = harness.rendered(180, 30);
         assert!(view.contains('▒') || view.contains('▓'), "static:\n{view}");
-        harness.tick(later + CHANNEL_STATIC);
+        harness.tick(later + SELECTION_STATIC);
         let next = harness.picker.update(Message::Preview {
             generation: harness.picker.generation,
             destination: workers[0].destination.clone(),
@@ -3957,7 +4150,7 @@ mod tests {
             let mut previous_session = selected.clone();
             match boundary {
                 "scan" => {
-                    harness.picker.rescan();
+                    harness.picker.rescan(false);
                     assert!(cancel.is_cancelled());
                     assert!(harness.picker.preview_inflight.is_none());
                 }
@@ -4115,8 +4308,10 @@ mod tests {
             save_host_mapping(path, mapping, "old-host").unwrap();
             let raw = serde_json::json!({
                 "BackendState": "Running",
+                "Self": {"UserID": 42},
                 "Peer": {"peer": {
                     "ID": id,
+                    "UserID": 42,
                     "DNSName": "box.example.test.",
                     "HostName": "box",
                     "OS": "linux",
@@ -4171,14 +4366,12 @@ mod tests {
         let saved = load_state(path).unwrap();
         assert!(!saved.is_pinned("a", "main"));
         assert!(saved.is_pinned("b", "main"));
-        assert_eq!(saved.recent.len(), 2);
-        assert_eq!(saved.recent[0].worker, "b");
-        assert_eq!(saved.recent[1].worker, "a");
+        assert!(saved.recent.is_empty());
         assert_eq!(pickers[0].picker.state, saved);
     }
 
     #[test]
-    fn pins_and_recents_are_shown_and_saved() {
+    fn only_explicit_pins_are_shown_and_saved() {
         let workers = vec![worker("a", "alpha"), worker("b", "beta")];
         let inventories = vec![
             ready(&workers[0], vec![session("$0", "main")]),
@@ -4192,23 +4385,30 @@ mod tests {
                 worker: "b".into(),
                 session: "work".into(),
             }],
-            ..State::default()
+            recent: vec![crate::state::Recent {
+                worker: "a".into(),
+                session: "main".into(),
+            }],
         };
         let mut harness = Harness::with_state(workers, inventories, state);
         let view = harness.rendered(180, 30);
         assert!(view.contains("Pinned") && view.contains("★ work"), "{view}");
+        assert!(!view.contains("★ main") && !view.contains('↺'), "{view}");
         // Pinned rows lead the list; one attaches by name to the live session.
         harness.press(&["g", "enter"]);
         let launched = harness.launched();
         assert_eq!(launched[0].worker.key, "b");
         assert_eq!(launched[0].session.as_ref().unwrap().id, "$1");
-        let saved = harness.effects.borrow().states.last().cloned().unwrap();
-        assert_eq!(saved.recent[0].worker, "b");
-        assert_eq!(saved.recent[0].session, "work");
+        assert!(
+            harness.effects.borrow().states.is_empty(),
+            "attaching does not save history"
+        );
         // Pinning another session saves it; it then appears in the pinned section.
         harness.press(&["G", "f"]);
         let saved = harness.effects.borrow().states.last().cloned().unwrap();
         assert!(saved.is_pinned("b", "side"), "{saved:?}");
+        assert_eq!(saved.recent, harness.picker.state.recent);
+        assert_eq!(saved.recent[0].worker, "a");
         assert!(harness.rendered(180, 30).contains("★ side"));
         // A pin whose session is gone is not offered.
         harness.picker.state.toggle_pin("a", "missing");
@@ -4217,34 +4417,41 @@ mod tests {
     }
 
     #[test]
-    fn launching_lists_the_session_as_recent_and_keeps_it_selected() {
+    fn launching_does_not_add_pins_and_keeps_the_session_selected() {
         let computer = worker("a", "box");
-        let mut harness = Harness::new(
+        let mut harness = Harness::with_state(
             vec![computer.clone()],
             vec![ready(
                 &computer,
                 vec![session("$0", "main"), session("$1", "side")],
             )],
+            State {
+                pins: vec![],
+                recent: vec![crate::state::Recent {
+                    worker: "a".into(),
+                    session: "side".into(),
+                }],
+            },
         );
+        assert!(!harness.rendered(60, 24).contains("Pinned"));
         harness.press(&["down", "enter"]);
         let launched = harness.launched();
         assert_eq!(launched.len(), 1);
         assert_eq!(launched[0].session.as_ref().unwrap().id, "$1");
         let picker = &harness.picker;
-        let recents: Vec<&str> = picker
-            .rows
-            .iter()
-            .filter(|row| row.kind == RowKind::Pinned && !row.favorite)
-            .filter_map(|row| picker.session(*row))
-            .map(|session| session.id.as_str())
-            .collect();
-        assert_eq!(recents, ["$1"]);
+        assert!(picker.rows.iter().all(|row| row.kind != RowKind::Pinned));
+        assert!(harness.effects.borrow().states.is_empty());
         assert!(
             picker
                 .current_row()
                 .is_some_and(|row| row.kind == RowKind::Session)
         );
         assert_eq!(picker.selected_session().unwrap().1.id, "$1");
+        assert!(!harness.rendered(60, 24).contains("Pinned"));
+        harness.press(&["f"]);
+        assert!(harness.rendered(60, 24).contains("Pinned"));
+        harness.press(&["f"]);
+        assert!(!harness.rendered(60, 24).contains("Pinned"));
     }
 
     #[test]
@@ -4323,7 +4530,7 @@ mod tests {
             Box::new(move |change| update_state(&saved_path, change));
         harness.press(&["f", "enter"]);
         assert!(harness.picker.state.is_pinned("a", "main"));
-        assert_eq!(harness.picker.state.recent.len(), 1);
+        assert!(harness.picker.state.recent.is_empty());
         assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
         assert!(
             harness
@@ -4483,6 +4690,7 @@ mod tests {
             }
             if harness.picker.terminal_visible {
                 let area = harness.picker.terminal_area;
+                let before = harness.rendered(width, height);
                 let event = wheel(MouseEventKind::ScrollDown, area.x, area.y);
                 assert!(harness.picker.terminal_mouse_event(event).is_none());
                 assert!(harness.picker.update(Message::Mouse(event)).is_none());
@@ -4498,7 +4706,7 @@ mod tests {
                         .take(3)
                         .any(|line| line.contains("Tab"))
                 );
-                assert!(view.lines().last().unwrap().contains("list focused"));
+                assert_eq!(view.lines().last(), before.lines().last());
                 assert_eq!(harness.picker.terminal_area, area);
                 assert!(harness.launched().is_empty());
             }

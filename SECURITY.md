@@ -32,15 +32,15 @@ Picker previews use read-only `tmux capture-pane`. Both previews and the embedde
 
 ### Which computers are contacted
 
-Tailscale discovery includes your Linux and macOS computers and tagged devices. Shared computers and other users' devices are skipped unless configured by Tailscale node ID or full DNS name in `hosts`; a short hostname is not sufficient to authorize them. If Delux itself runs on a tagged device, the owner check is skipped. Tailscale presence does not establish SSH access.
+Automatic Tailscale discovery includes only Linux and macOS peers that are unshared, untagged, and have the same known, nonzero `UserID` as the untagged local node. Missing or zero ownership on either node, a tagged local node or peer, shared peers, and other users' peers require explicit `--host` or configuration. Tailscale presence does not establish SSH access.
 
-Host mappings are matched by node ID, full DNS name without its trailing dot, short DNS name, then hostname. Configured hosts are probed even when absent from Tailscale discovery. Saving a user with `u` uses the stable discovery key, taking precedence over name-based mappings.
+For untagged, unshared peers with known matching ownership, host mappings are matched by node ID, full DNS name without its trailing dot, short DNS name, then hostname. Restricted peers match mappings and `ignore` entries only by node ID or full DNS name; their short DNS names and hostnames cannot claim or suppress independently configured aliases. Configure a restricted peer by node ID or full DNS name to associate it with its discovery metadata. Other configured aliases remain independent SSH destinations and are probed even when absent from Tailscale discovery. Saving a user with `u` uses the stable discovery key, taking precedence over name-based mappings.
 
 `ignore` excludes matching computers, including configured hosts. Explicit `--host` destinations bypass discovery and `ignore`, but still resolve through configured mappings.
 
 ### Stored preferences
 
-Configuration defaults to `~/.config/delux/cli.json`, including on macOS. Pins and recent attachments live in `~/.local/state/delux/state.json`. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override those base directories; `--config PATH` overrides the configuration file. Relative or empty XDG directory values are ignored, and non-UTF-8 directory roots are rejected.
+Configuration defaults to `~/.config/delux/cli.json`, including on macOS. Pins live in `~/.local/state/delux/state.json`; legacy recent-attachment entries are preserved but no longer recorded or displayed. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override those base directories; `--config PATH` overrides the configuration file. Relative or empty XDG directory values are ignored, and non-UTF-8 directory roots are rejected.
 
 These files contain computer mappings and session preferences, not passwords, private keys, or captured terminal output. Previews stay in memory, and inventories refresh on rescan.
 
