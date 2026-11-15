@@ -8,7 +8,15 @@ Delux uses SSH and your existing tmux sessions. It can find computers through [T
 
 ## Install
 
-For macOS and Linux. Source-only for now; binary releases and Homebrew installation aren't available yet.
+For macOS and Linux. **0.1.0 binary downloads and Homebrew installation are pending publication**, not available yet. After the release and public tap are published:
+
+```sh
+brew install delux-sh/tap/delux
+```
+
+The release archives will cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
+
+### Build from source now
 
 You'll need Rust 1.88+ and a C linker—Xcode Command Line Tools on macOS, or your Linux distribution's build tools:
 
@@ -21,7 +29,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 Keep `~/.cargo/bin` on your shell's `PATH`.
 
-Computers with sessions need **tmux 3.2+**. Remote access needs OpenSSH, with `tmux`, `base64`, and `tr` available to noninteractive `/bin/sh` commands. Tailscale and its CLI are optional, for discovery.
+Local discovery and attachment need **tmux 3.2+**. Remote access needs a local OpenSSH client and an SSH server on the remote computer, with **tmux 3.2+**, `base64`, and `tr` available to noninteractive `/bin/sh` commands. No remote Delux service or installation is needed. Tailscale and its CLI are optional, for discovery.
 
 ## Use it
 
@@ -87,7 +95,7 @@ To always include or ignore computers, create `~/.config/delux/cli.json`:
 
 This is a personal side project. Bug reports, small fixes, and ideas are welcome; please open an issue before starting a larger change.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO sign-offs. Report vulnerabilities [privately](SECURITY.md). [Verification notes](docs/verification.md) cover tested platforms and remaining gaps, including Intel Mac runtime testing.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO sign-offs. Report vulnerabilities [privately](SECURITY.md). [Verification notes](docs/verification.md) record tested platforms and remaining gaps.
 
 ## License
 

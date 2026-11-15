@@ -44,6 +44,7 @@ class Delux < Formula
   homepage "https://github.com/delux-sh/delux"
   license "GPL-3.0-or-later"
   depends_on "tmux"
+  uses_from_macos "openssh"
 
   on_macos do
     on_arm do
@@ -75,15 +76,22 @@ $linux_intel
     ENV.delete "TMUX_PANE"
     ENV["XDG_CONFIG_HOME"] = testpath/"config"
     ENV["XDG_STATE_HOME"] = testpath/"state"
-    ENV["TMUX_TMPDIR"] = testpath
-    system "tmux", "-f", File::NULL, "new-session", "-d", "-s", "brew-test"
-    begin
-      inventory = JSON.parse(shell_output("#{bin}/delux list --local --json"))
-      assert_equal ["brew-test"], inventory.fetch("computers").flat_map { |computer|
-        computer.fetch("sessions").map { |session| session.fetch("name") }
-      }
-    ensure
-      system "tmux", "kill-server"
+    ENV["SHELL"] = "/bin/sh"
+    # Keep the private socket below Unix-domain path length limits.
+    Dir.mktmpdir("delux-test-", "/tmp") do |root|
+      ENV["TMUX_TMPDIR"] = root
+      config = Pathname(root)/"tmux.conf"
+      config.write "set -g default-shell /bin/sh\n"
+      socket = "#{root}/tmux-#{Process.uid}/default"
+      begin
+        system "tmux", "-f", config, "new-session", "-d", "-s", "brew-test"
+        inventory = JSON.parse(shell_output("#{bin}/delux list --local --json"))
+        assert_equal ["brew-test"], inventory.fetch("computers").flat_map { |computer|
+          computer.fetch("sessions").map { |session| session.fetch("name") }
+        }
+      ensure
+        system "tmux", "-S", socket, "kill-server" if File.socket?(socket)
+      end
     end
   end
 end
