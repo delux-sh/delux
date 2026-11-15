@@ -120,12 +120,15 @@ impl Entry {
                 .enumerate()
                 .map(|(index, session)| (session.id.as_str(), index))
                 .collect();
-            // Existing sessions keep their places; new sessions append in scan order.
+            // Existing sessions keep their places; new sessions append newest first.
             inventory.sessions.sort_by_key(|session| {
-                positions
-                    .get(session.id.as_str())
-                    .copied()
-                    .unwrap_or(usize::MAX)
+                (
+                    positions
+                        .get(session.id.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                    std::cmp::Reverse(session.activity),
+                )
             });
         }
         self.inventory = Some(inventory);

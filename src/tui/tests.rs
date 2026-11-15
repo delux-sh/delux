@@ -1076,21 +1076,29 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
     );
     assert_eq!(harness.picker.selection, selection);
     // Status changes expand a computer in place instead of promoting it.
-    harness.picker.update(Message::Checked(ready(
-        &beta,
-        vec![session("$0", "beta-work")],
-    )));
-    assert_order(&mut harness, &["alpha", "gamma", "beta", "beta-work"]);
+    let mut beta_older = session("$0", "beta-older");
+    beta_older.activity = 10;
+    let mut beta_newer = session("$1", "beta-newer");
+    beta_newer.activity = 99;
+    harness
+        .picker
+        .update(Message::Checked(ready(&beta, vec![beta_older, beta_newer])));
+    assert_order(
+        &mut harness,
+        &["alpha", "gamma", "beta", "beta-newer", "beta-older"],
+    );
     assert_eq!(harness.picker.selection, selection);
 
     second.activity = 40;
     let mut added = session("$4", "added");
     added.activity = 30;
+    let mut newest = session("$5", "newest");
+    newest.activity = 50;
     let workers = vec![beta.clone(), delta.clone(), alpha.clone()];
     let inventories = vec![
         failed(&delta, Status::AuthRequired, "Sign in"),
         ready(&beta, vec![]),
-        ready(&alpha, vec![added, second, first]),
+        ready(&alpha, vec![added, newest, second, first]),
     ];
     harness.picker.services.discover = Arc::new(move |_| Ok((workers.clone(), String::new())));
     harness.picker.services.scan = Arc::new(move |_, _| {
@@ -1107,7 +1115,9 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
     harness.drive(next);
     assert_order(
         &mut harness,
-        &["alpha", "first", "second", "added", "beta", "delta"],
+        &[
+            "alpha", "first", "second", "newest", "added", "beta", "delta",
+        ],
     );
     let view = harness.rendered(60, 24);
     assert!(
@@ -1118,7 +1128,9 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
     harness.press(&["r"]);
     assert_order(
         &mut harness,
-        &["alpha", "second", "added", "first", "delta", "beta"],
+        &[
+            "alpha", "newest", "second", "added", "first", "delta", "beta",
+        ],
     );
     assert_eq!(harness.picker.selection, selection);
 }

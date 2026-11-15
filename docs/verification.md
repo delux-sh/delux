@@ -26,6 +26,8 @@ A clean disposable Homebrew 7 prefix installed a dependency-free local formula c
 
 Inspection of the raw OS boundaries covered descriptor ownership, IO buffer bounds, initialized terminal/process structures, post-fork restrictions, and kill-before-reap ordering. No additional release-blocking issue was identified in that inspection; it is not a formal safety audit. Module splitting and safe-syscall migration are separate maintenance work.
 
+Pre-merge review found that computers recovering from an empty or failed inventory appended all sessions in scan order. New sessions now append newest-first while existing sessions retain their positions. The expanded refresh/detach/filter regression and the rebuilt binary's isolated real-PTY scenario passed.
+
 ## Inactive-panel scroll guidance
 
 The right panel distinguishes Preview (Enter to attach), Connected (Tab to interact), and Active (Shift-Tab for the list). Inactive titles and borders are muted without dimming session output. Wheel input over an inactive panel shows a centered, bordered message over that panel: Press Enter to attach or Press Tab to interact. It does not attach, change focus, overwrite diagnostics or the footer, or resize the terminal. A keypress dismisses it.
