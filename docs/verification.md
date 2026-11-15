@@ -1,5 +1,13 @@
 # Verification record
 
+## Inactive-panel scroll guidance
+
+The right panel distinguishes Preview (Enter to attach), Connected (Tab to interact), and Active (Shift-Tab for the list). Inactive titles and borders are muted without dimming session output. Wheel input over an inactive panel shows contextual guidance in the existing footer; it does not attach, change focus, overwrite diagnostics, or add a row that resizes the terminal.
+
+All 49 picker tests and four preview-renderer tests passed, along with formatting, Clippy with warnings denied, and the native macOS ARM64 release build. Regression coverage includes previewing a different session while another client remains connected, unattached previews, filtering, pointer bounds, sidebar navigation, and unchanged terminal geometry.
+
+A real-PTY check with two isolated tmux sessions verified all three visible states, injected mouse-wheel hints, explicit attachment/focus, retention of the original client while browsing another preview, hint dismissal, side-by-side and stacked layouts, and preservation of both sessions after quitting. Temporary fixtures were removed. Physical trackpad behavior and remote SSH were not separately exercised. The four-platform packaging results below predate this UI change.
+
 ## 0.1.0 Homebrew preparation
 
 [Release dry run 43662052243](https://github.com/delux-sh/delux/actions/runs/43662052243) passed at `f3bd4cc`. It ran Linux/macOS CI and the minimum-Rust check, built all four GPL archives, and verified their checksums on native runners. Every platform installed the generated formula with full dependency resolution, passed `brew test` and `brew audit --strict`, and verified the installed executable was byte-identical to its archive.

@@ -64,7 +64,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, screen: &Screen, effects: Effec
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::muted_border())
-        .title(Line::from(format!(" {label} ")))
+        .title(Line::styled(format!(" {label} "), theme::muted()))
         .title(Line::from(vec![Span::styled(light, light_style), Span::raw(" ")]).right_aligned());
     if !screen.detail.is_empty() {
         let room = usize::from(area.width).saturating_sub(4);

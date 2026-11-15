@@ -289,6 +289,7 @@ struct Picker {
     entries: Vec<Entry>,
     warning: String,
     notice: String,
+    show_scroll_hint: bool,
     filter: String,
     filtering: bool,
     input: Option<UserInput>,
@@ -338,6 +339,7 @@ impl Picker {
             entries: Vec::new(),
             warning: String::new(),
             notice: String::new(),
+            show_scroll_hint: false,
             filter: String::new(),
             filtering: false,
             input: None,
@@ -679,6 +681,7 @@ impl Picker {
         if key.kind == KeyEventKind::Release {
             return None;
         }
+        self.show_scroll_hint = false;
         if key.code == KeyCode::BackTab
             || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
         {
@@ -831,6 +834,7 @@ impl Picker {
     }
 
     fn mouse(&mut self, event: MouseEvent) -> Option<Command> {
+        self.show_scroll_hint = false;
         if let Some(event) = self.terminal_mouse_event(event) {
             let active = self.active.as_mut()?;
             match active.terminal.scroll(event) {
@@ -855,8 +859,42 @@ impl Picker {
                 MouseEventKind::ScrollDown => self.move_cursor(1),
                 _ => {}
             }
+        } else if matches!(
+            event.kind,
+            MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight
+        ) && self
+            .terminal_area
+            .contains((event.column, event.row).into())
+            && self.inactive_scroll_hint().is_some()
+        {
+            self.show_scroll_hint = true;
         }
         None
+    }
+
+    fn inactive_scroll_hint(&self) -> Option<&'static str> {
+        if self.terminal_focused || self.input.is_some() || self.filtering {
+            return None;
+        }
+        if self.terminal_visible {
+            Some("Tab to interact with the terminal and scroll.")
+        } else if self.preview_visible {
+            Some(
+                if self
+                    .current_row()
+                    .is_some_and(|row| self.session(row).is_some())
+                {
+                    "Preview only: Enter to attach and scroll."
+                } else {
+                    "Select a session to attach and scroll."
+                },
+            )
+        } else {
+            None
+        }
     }
 
     fn paste(&mut self, text: &str) -> Option<Command> {
@@ -1444,7 +1482,6 @@ impl Picker {
             header,
         );
         frame.render_widget(Paragraph::new(status_lines), status);
-        frame.render_widget(Paragraph::new(self.footer_line()), footer);
 
         // Keep the sidebar stable through scans, filtering, and selection changes.
         // At 80 columns it leaves 48 for the preview or terminal.
@@ -1540,6 +1577,8 @@ impl Picker {
                 self.render_preview(frame, area);
             }
         }
+        // Hints use the existing footer and the panel bounds from this frame.
+        frame.render_widget(Paragraph::new(self.footer_line()), footer);
     }
 
     fn render_sign_in(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -1594,14 +1633,14 @@ impl Picker {
         };
         let title = match &active.session {
             Some(session) => format!(
-                " {} / {} · {} ",
+                " {} · {} / {} ",
+                if self.terminal_focused {
+                    "Active · Shift-Tab for list"
+                } else {
+                    "Connected · Tab to interact"
+                },
                 display(&active.worker.name, 80),
                 display(&session.name, 80),
-                if self.terminal_focused {
-                    "terminal"
-                } else {
-                    "connected"
-                },
             ),
             None => format!(
                 " {} · {} · sign in ",
@@ -1624,7 +1663,14 @@ impl Picker {
             } else {
                 theme::muted()
             })
-            .title(Line::styled(title, self.tint.heading()));
+            .title(Line::styled(
+                title,
+                if self.terminal_focused {
+                    self.tint.heading()
+                } else {
+                    theme::muted()
+                },
+            ));
         let content = if area.width < 3 || area.height < 3 {
             area
         } else {
@@ -1684,6 +1730,11 @@ impl Picker {
     }
 
     fn footer_line(&self) -> Line<'static> {
+        if self.show_scroll_hint
+            && let Some(hint) = self.inactive_scroll_hint()
+        {
+            return Line::styled(hint, self.tint.accent());
+        }
         let hints: &[(&str, &str)] = if self.terminal_focused
             && self
                 .active
@@ -1835,7 +1886,10 @@ impl Picker {
             };
             return Screen {
                 channel: Some(channel),
-                label: format!("{} / {}", entry.worker.name, session.name),
+                label: format!(
+                    "Preview · Enter to attach · {} / {}",
+                    entry.worker.name, session.name
+                ),
                 detail: session_details(session, (self.services.now)()),
                 lines,
                 signal,
@@ -4411,10 +4465,60 @@ mod tests {
                 assert!(harness.picker.update(Message::Mouse(event)).is_none());
                 assert_eq!(harness.picker.selection, initial);
                 assert!(harness.picker.notice.is_empty());
+                assert!(harness.picker.show_scroll_hint);
+                assert!(!harness.picker.terminal_focused);
+                let view = harness.rendered(width, height);
+                assert!(view.lines().last().unwrap().contains("Tab"));
+                assert_eq!(harness.picker.terminal_area, area);
+                assert!(harness.launched().is_empty());
             }
             harness.press(&["tab"]);
+            assert!(!harness.picker.show_scroll_hint);
             assert!(harness.picker.update(Message::Mouse(down)).is_none());
             assert_eq!(harness.picker.selection, initial);
+        }
+    }
+
+    #[test]
+    fn preview_wheel_guidance_does_not_attach_or_focus_a_background_client() {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.press(&["down"]);
+        for connected in [true, false] {
+            if !connected {
+                harness.picker.active = None;
+            }
+            for (width, height) in [(120, 30), (70, 40)] {
+                harness.buffer(width, height);
+                assert!(harness.picker.preview_visible);
+                let selection = harness.picker.selection.clone();
+                let area = harness.picker.terminal_area;
+                harness.picker.notice = "Existing diagnostic".into();
+                let event = wheel(MouseEventKind::ScrollDown, area.x, area.y);
+                assert!(harness.picker.update(Message::Mouse(event)).is_none());
+                assert!(harness.picker.show_scroll_hint);
+                assert_eq!(harness.picker.selection, selection);
+                assert!(!harness.picker.terminal_focused);
+                assert_eq!(harness.picker.active.is_some(), connected);
+                assert!(harness.launched().is_empty());
+                let view = harness.rendered(width, height);
+                assert!(view.lines().last().unwrap().contains("Enter"));
+                assert!(view.contains("Existing diagnostic"));
+                harness.press(&["esc"]);
+                assert!(!harness.picker.show_scroll_hint);
+                for kind in [MouseEventKind::Moved, MouseEventKind::ScrollDown] {
+                    let mut outside = wheel(kind, area.x - 1, area.y);
+                    assert!(harness.picker.update(Message::Mouse(outside)).is_none());
+                    assert!(!harness.picker.show_scroll_hint);
+                    outside.column = area.x;
+                    harness.picker.filtering = true;
+                    assert!(harness.picker.update(Message::Mouse(outside)).is_none());
+                    assert!(!harness.picker.show_scroll_hint);
+                    harness.picker.filtering = false;
+                }
+            }
         }
     }
 
