@@ -1,5 +1,15 @@
 # Verification record
 
+## Separate maintenance refactor
+
+The picker is split into private input, layout, drawing, runtime, and test modules, with model/update logic in `src/tui.rs`. Typed `rustix` calls and `rustix-openpty` replace manual production IO, process, socket, locking, and PTY boundaries. Five production `unsafe` blocks remain: two `pre_exec` registrations and zero-initialized libc termios capture/restore. Test fixtures retain their own OS boundaries.
+
+After correcting a signal-constant spelling and a test-only import during integration, the full native macOS ARM64 suite passed: 181 tests, with one subprocess fixture marked ignored. Clippy with warnings denied, Rust 1.88 all-target checking, Intel macOS and both Linux musl architecture checks, and the native release build passed. Dependency license-notice generation passed with the new `rustix-openpty` entry. Formatting was applied.
+
+The rebuilt binary passed the isolated real-PTY scenario again: aligned inventory, explicit pin/unpin, stable detach/filter order, no channel numbers, complete 60-column hints, embedded shell input, clean exit, and preserved sessions. Cross-target checks are compilation evidence, not native runtime/package validation. No physical trackpad check or release publication was performed.
+
+The preceding release-fixes branch independently passed [native Linux/macOS CI and MSRV](https://github.com/delux-sh/delux/actions/runs/43745509749) and [DCO](https://github.com/delux-sh/delux/actions/runs/43745510204).
+
 ## Release review fixes
 
 Automatic discovery now requires known, matching, nonzero ownership on untagged local/peer nodes and excludes shared peers unless explicitly configured. Regression coverage includes missing/zero ownership, tags on either node, restricted aliases, ignores, and explicit hosts.

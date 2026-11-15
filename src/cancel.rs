@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, waitid};
+
 #[derive(Debug)]
 struct Scope {
     cancelled: Arc<AtomicBool>,
@@ -64,31 +66,18 @@ impl CommandGuard<'_> {
         {
             // Observe exit without reaping: the root pid must still be reserved
             // while we kill descendants in its group, even after normal exit.
-            // SAFETY: zero is valid for siginfo_t's scalar and pointer fields.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: waitid writes within info; WNOWAIT preserves this child's
-            // pid until group cleanup finishes and Child::try_wait reaps it.
-            let result = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.pid as libc::id_t,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
+            let pid = Pid::from_raw(self.pid as i32).expect("owned child PID");
+            let info = match waitid(
+                WaitId::Pid(pid),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+            ) {
+                Ok(info) => info,
+                Err(rustix::io::Errno::INTR) => return Ok(None),
+                Err(error) => return Err(error.into()),
             };
-            if result == -1 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    return Ok(None);
-                }
-                return Err(error);
-            }
             // Darwin can report a stopped child despite WEXITED. Only terminal
             // exit events permit group cleanup; a stop must leave it alive.
-            if !matches!(
-                info.si_code,
-                libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
-            ) {
+            if !info.is_some_and(|info| info.exited() || info.killed() || info.dumped()) {
                 return Ok(None);
             }
             terminate(self.pid, false);
@@ -139,14 +128,14 @@ impl Drop for CommandGuard<'_> {
 }
 
 pub(crate) fn terminate(pid: u32, interactive: bool) {
-    let target = if interactive {
-        pid as libc::pid_t
+    let pid = Pid::from_raw(pid as i32).expect("owned child PID");
+    // The registered child owns this PID or its new session/process group;
+    // reaping uses the same lock, so cleanup cannot target a reused PID.
+    let _ = if interactive {
+        rustix::process::kill_process(pid, Signal::KILL)
     } else {
-        -(pid as libc::pid_t)
+        rustix::process::kill_process_group(pid, Signal::KILL)
     };
-    // SAFETY: kill takes scalar arguments. The registered child owns this pid
-    // or the session/process group created for it; reaping uses the same lock.
-    unsafe { libc::kill(target, libc::SIGKILL) };
 }
 
 impl Cancel {

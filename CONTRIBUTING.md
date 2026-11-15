@@ -32,6 +32,10 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
+Picker state and updates live in `src/tui.rs`; input, layout, drawing, runtime, and regression tests are separate modules under `src/tui/`.
+
+Unix operations use `rustix` and `rustix-openpty` where their contracts fit. Keep post-fork hooks allocation/lock-free and preserve kill-before-reap ordering. Terminal-state capture deliberately retains zero-initialized libc storage because Darwin can leave part of `c_cc` unwritten; do not replace it merely to remove an `unsafe` block.
+
 ## Never touch real sessions while testing
 
 Delux attaches to and sends keys through tmux, so a test or a manual experiment pointed at your real tmux server can type into a running program. Tests use isolated tmux servers on temporary sockets; keep it that way. For manual testing, start a throwaway server and temporary config and state in a subshell:
