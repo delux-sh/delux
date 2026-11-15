@@ -2,13 +2,17 @@
 
 ## Separate maintenance refactor
 
-The picker is split into private input, layout, drawing, runtime, and test modules, with model/update logic in `src/tui.rs`. Typed `rustix` calls and `rustix-openpty` replace manual production IO, process, socket, locking, and PTY boundaries. Five production `unsafe` blocks remain: two `pre_exec` registrations and zero-initialized libc termios capture/restore. Test fixtures retain their own OS boundaries.
+The picker is split into private input, layout, drawing, runtime, and test modules, with model/update logic in `src/tui.rs`. Typed `rustix` calls replace manual production IO, process, socket, and locking boundaries. Seven production `unsafe` blocks remain around `pre_exec`, libc PTY creation/ownership, and zero-initialized termios capture/restore. Test fixtures retain their own OS boundaries. The unreachable expanded-row renderer was removed.
 
-After correcting a signal-constant spelling and a test-only import during integration, the full native macOS ARM64 suite passed: 181 tests, with one subprocess fixture marked ignored. Clippy with warnings denied, Rust 1.88 all-target checking, Intel macOS and both Linux musl architecture checks, and the native release build passed. Dependency license-notice generation passed with the new `rustix-openpty` entry. Formatting was applied.
+Initial refactor validation, after correcting a signal-constant spelling and a test-only import, passed the full native macOS ARM64 suite: 181 tests, with one subprocess fixture marked ignored. Clippy with warnings denied, Rust 1.88 all-target checking, Intel macOS and both Linux musl architecture checks, and the native release build passed. Dependency license-notice generation passed for that dependency set. Formatting was applied.
 
 The rebuilt binary passed the isolated real-PTY scenario again: aligned inventory, explicit pin/unpin, stable detach/filter order, no channel numbers, complete 60-column hints, embedded shell input, clean exit, and preserved sessions. Cross-target checks are compilation evidence, not native runtime/package validation. No physical trackpad check or release publication was performed.
 
 The preceding release-fixes branch independently passed [native Linux/macOS CI and MSRV](https://github.com/delux-sh/delux/actions/runs/43745509749) and [DCO](https://github.com/delux-sh/delux/actions/runs/43745510204).
+
+Pre-merge review found that the new PTY dependency did not fall back when Linux returned `ENOTTY` for an unsupported `TIOCGPTPEER`. PTY allocation now retains the existing portable libc implementation; the dependency was removed. A Linux subprocess regression uses seccomp to reproduce the unavailable ioctl and requires a working embedded PTY. Only that disposable subprocess installs the filter.
+
+The review fixes passed 181 native macOS tests (one ignored subprocess fixture), Clippy with warnings denied, Rust 1.88 checking, Linux ARM64 musl all-target compilation, and the native release build. The rebuilt picker also passed the real-PTY scenario above. Native execution of the Linux-only seccomp regression is required in CI before merge.
 
 ## Release review fixes
 

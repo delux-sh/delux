@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(before.c_line, after.c_line);
     }
 
-    // Re-executed inside a session whose stdin and stderr are the PTY slave.
+    // Re-executed to isolate terminal settings and process-local syscall filters.
     // The normal test run has no mode and returns without creating a subprocess.
     #[test]
     fn command_helper_process() {
@@ -709,6 +709,93 @@ mod tests {
                 assert_eq!(std::fs::read(&marker).unwrap(), b"raw");
                 println!("terminal restored");
             }
+            #[cfg(target_os = "linux")]
+            "pty-without-peer-ioctl" => {
+                // Simulate a kernel without TIOCGPTPEER only in this helper.
+                let request_offset = std::mem::offset_of!(libc::seccomp_data, args)
+                    + std::mem::size_of::<u64>()
+                    + if cfg!(target_endian = "big") { 4 } else { 0 };
+                let mut filter = [
+                    (
+                        libc::BPF_LD | libc::BPF_W | libc::BPF_ABS,
+                        0,
+                        0,
+                        std::mem::offset_of!(libc::seccomp_data, nr) as u32,
+                    ),
+                    (
+                        libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                        0,
+                        3,
+                        libc::SYS_ioctl as u32,
+                    ),
+                    (
+                        libc::BPF_LD | libc::BPF_W | libc::BPF_ABS,
+                        0,
+                        0,
+                        request_offset as u32,
+                    ),
+                    (
+                        libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                        0,
+                        1,
+                        libc::TIOCGPTPEER as u32,
+                    ),
+                    (
+                        libc::BPF_RET | libc::BPF_K,
+                        0,
+                        0,
+                        libc::SECCOMP_RET_ERRNO | libc::ENOTTY as u32,
+                    ),
+                    (libc::BPF_RET | libc::BPF_K, 0, 0, libc::SECCOMP_RET_ALLOW),
+                ]
+                .map(|(code, jt, jf, k)| libc::sock_filter {
+                    code: code as u16,
+                    jt,
+                    jf,
+                    k,
+                });
+                let program = libc::sock_fprog {
+                    len: filter.len() as u16,
+                    filter: filter.as_mut_ptr(),
+                };
+                // SAFETY: these calls restrict only this disposable helper;
+                // program points to initialized filter storage for the call.
+                unsafe {
+                    assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+                    assert_eq!(
+                        libc::prctl(
+                            libc::PR_SET_SECCOMP,
+                            libc::SECCOMP_MODE_FILTER,
+                            std::ptr::from_ref(&program),
+                            0,
+                            0,
+                        ),
+                        0
+                    );
+                    assert_eq!(libc::ioctl(-1, libc::TIOCGPTPEER, 0), -1);
+                }
+                assert_eq!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ENOTTY)
+                );
+                let mut terminal = crate::embedded::EmbeddedTerminal::spawn(
+                    &shell("test -t 0 && test -t 1 && printf legacy-pty-ok"),
+                    24,
+                    80,
+                )
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    if let Some(code) = terminal.poll().unwrap() {
+                        assert_eq!(code, 0);
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "PTY child did not exit");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                assert!(terminal.contents().contains("legacy-pty-ok"));
+                println!("legacy-pty-ok");
+            }
             mode => panic!("unknown process helper mode: {mode}"),
         }
         io::stdout().flush().unwrap();
@@ -724,6 +811,33 @@ mod tests {
     #[test]
     fn run_command_interactive_cancellation_restores_terminal() {
         run_interactive_command_helper("interactive-cancel-runner", "terminal restored\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn embedded_pty_works_without_peer_ioctl() {
+        let _environment = env_read();
+        let args = [
+            std::env::current_exe()
+                .unwrap()
+                .into_os_string()
+                .into_string()
+                .unwrap(),
+            "--exact".into(),
+            "process::tests::command_helper_process".into(),
+            "--nocapture".into(),
+        ];
+        let result = run_command_with_env(
+            &Cancel::new(),
+            &args,
+            Duration::from_secs(5),
+            false,
+            &[("DELUX_PROCESS_TEST_MODE", "pty-without-peer-ioctl")],
+            COMMAND_OUTPUT_LIMIT,
+        )
+        .unwrap();
+        assert_eq!(result.code, 0, "{result:?}");
+        assert!(result.stdout.contains("legacy-pty-ok"), "{result:?}");
     }
 
     fn run_interactive_command_helper(mode: &str, expected: &str) {

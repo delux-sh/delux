@@ -13,7 +13,6 @@ pub(super) fn chrome(area: Rect, status_lines: usize) -> [Rect; 4] {
 }
 
 pub(super) struct Panes {
-    pub(super) compact: bool,
     pub(super) list: Rect,
     pub(super) preview: Option<Rect>,
 }
@@ -21,9 +20,8 @@ pub(super) struct Panes {
 pub(super) fn panes(body: Rect, rows: usize, active: bool, focused: bool) -> Panes {
     // Keep the sidebar stable through scans, filtering, and selection changes.
     // At 80 columns it leaves 48 for the preview or terminal.
-    let compact = body.width >= 80 || body.height >= 24;
     let width = 32;
-    let beside = compact && body.width.saturating_sub(width) >= 48;
+    let beside = body.width.saturating_sub(width) >= 48;
     let (list_area, preview_area) = if focused && (!beside || body.height < 3) && body.height < 24 {
         (Rect::default(), Some(body))
     } else if beside {
@@ -46,7 +44,6 @@ pub(super) fn panes(body: Rect, rows: usize, active: bool, focused: bool) -> Pan
         (body, None)
     };
     Panes {
-        compact,
         list: list_area,
         preview: preview_area,
     }

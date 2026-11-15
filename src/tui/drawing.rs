@@ -90,7 +90,6 @@ impl Picker {
         frame.render_widget(Paragraph::new(status_lines), status);
 
         let layout::Panes {
-            compact,
             list: list_area,
             preview: preview_area,
         } = layout::panes(
@@ -104,7 +103,7 @@ impl Picker {
         self.list_height = list_area.height;
 
         let sidebar_inactive = self.terminal_focused || signing_in;
-        let items = self.render_rows(compact, list_area.width, sidebar_inactive);
+        let items = self.render_rows(list_area.width, sidebar_inactive);
         let mut block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(if sidebar_inactive {
@@ -545,15 +544,10 @@ impl Picker {
         }
     }
 
-    /// Use names and short ages beside a preview or in a narrow list.
-    fn render_rows(&self, compact: bool, width: u16, inactive: bool) -> Vec<ListItem<'static>> {
-        let compact = compact || width < 80;
+    /// Session details live in the preview; rows use names and short ages.
+    fn render_rows(&self, width: u16, inactive: bool) -> Vec<ListItem<'static>> {
         let content_width = usize::from(width.saturating_sub(4));
-        let name_width = if compact {
-            content_width.saturating_sub(8)
-        } else {
-            48
-        };
+        let name_width = content_width.saturating_sub(8);
         let tint = self.tint;
         let (heading, text, secondary) = if inactive {
             let muted = theme::inactive_sidebar();
@@ -562,21 +556,14 @@ impl Picker {
             (tint.heading(), tint.text(), tint.secondary())
         };
         let now = (self.services.now)();
-        let details = |session: &Session| {
-            if compact {
-                format!("{:>4}", short_age(now, session.output))
-            } else {
-                session_details(session, now)
-            }
-        };
+        let details = |session: &Session| format!("{:>4}", short_age(now, session.output));
         // Pad session names within each computer, and pins as their own group.
         let group = |row: Row| match row.kind {
             RowKind::Pinned => usize::MAX,
             _ => row.entry,
         };
-        // Pinned rows also name their computer. It shares the room beside the
-        // mark and age (or details) with the session name, taking at most half.
-        let pinned_room = content_width.saturating_sub(if compact { 10 } else { 7 });
+        // Pinned rows share the room with their computer, taking at most half.
+        let pinned_room = content_width.saturating_sub(10);
         let host_width = self
             .rows
             .iter()
@@ -618,21 +605,10 @@ impl Picker {
                 let entry = &self.entries[row.entry];
                 let spans = match row.kind {
                     RowKind::PinnedHeader => vec![Span::styled("Pinned", heading)],
-                    RowKind::Group => {
-                        let mut spans = vec![Span::styled(
-                            fit_name(&entry.worker.name, content_width),
-                            heading,
-                        )];
-                        if let Some(destination) = &entry.worker.destination
-                            && !compact
-                        {
-                            spans.push(Span::styled(
-                                format!("  {}", display(destination, 120)),
-                                secondary,
-                            ));
-                        }
-                        spans
-                    }
+                    RowKind::Group => vec![Span::styled(
+                        fit_name(&entry.worker.name, content_width),
+                        heading,
+                    )],
                     RowKind::Pinned => {
                         let mut spans =
                             vec![Span::styled("★ ", heading), Span::styled(padded(row), text)];
@@ -640,19 +616,8 @@ impl Picker {
                             Span::styled(format!("  {}", details(session)), secondary)
                         });
                         let host = fit_name(&entry.worker.name, host_width);
-                        if compact {
-                            spans.extend(detail);
-                            spans.push(Span::styled(format!("  {host}"), secondary));
-                        } else {
-                            // Full details vary in length, so the computer comes first.
-                            let padding =
-                                host_width.saturating_sub(UnicodeWidthStr::width(host.as_str()));
-                            spans.push(Span::styled(
-                                format!("  on {host}{}", " ".repeat(padding)),
-                                secondary,
-                            ));
-                            spans.extend(detail);
-                        }
+                        spans.extend(detail);
+                        spans.push(Span::styled(format!("  {host}"), secondary));
                         spans
                     }
                     RowKind::Session => {

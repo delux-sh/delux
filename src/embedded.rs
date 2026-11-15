@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 use std::io::{self, Read};
 use std::num::NonZeroU16;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -724,18 +724,38 @@ fn dimensions(rows: u16, cols: u16) -> (NonZeroU16, NonZeroU16) {
     )
 }
 
+#[allow(clippy::unnecessary_mut_passed)] // macOS declares openpty pointers mutable.
 fn open_pty(rows: u16, cols: u16) -> io::Result<(OwnedFd, OwnedFd)> {
-    let size = rustix::termios::Winsize {
+    let mut master = -1;
+    let mut slave = -1;
+    let mut size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // None requests cooked platform defaults, not the picker's raw stdin.
-    // openpty returns owned descriptors with CLOEXEC set on both endpoints.
-    let pty = rustix_openpty::openpty(None, Some(&size))?;
-    nonblocking(&pty.controller)?;
-    Ok((pty.controller, pty.user))
+    // Keep libc's portable PTY allocation: Linux need not implement TIOCGPTPEER.
+    // SAFETY: all output pointers are valid. Null termios requests cooked
+    // platform defaults, not the picker's raw stdin settings.
+    if unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    } == -1
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openpty transferred ownership of these two fresh descriptors.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    for fd in [&master, &slave] {
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
+    }
+    nonblocking(&master)?;
+    Ok((master, slave))
 }
 
 fn nonblocking(fd: impl AsFd) -> io::Result<()> {
