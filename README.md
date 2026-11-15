@@ -112,6 +112,10 @@ This is a personal side project. Bug reports, small fixes, and ideas are welcome
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO sign-offs. Report vulnerabilities [privately](SECURITY.md). [Verification notes](docs/verification.md) record tested platforms and remaining gaps.
 
+## Acknowledgements
+
+Delux leans entirely on [tmux](https://github.com/tmux/tmux), [OpenSSH](https://www.openssh.com), and [Tailscale](https://tailscale.com), and is built with [Ratatui](https://ratatui.rs) and [vt100](https://github.com/doy/vt100-rust). Thank you to the people who make them.
+
 ## License
 
 [GPL-3.0-or-later](LICENSE). Copyright 2026 William Chen.
