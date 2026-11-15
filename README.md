@@ -10,6 +10,10 @@ tmux keeps your work running. Delux helps you find it again: browse local and re
 
 Delux uses SSH and your existing tmux sessions. It can find computers through [Tailscale](https://tailscale.com), or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
 
+## Why I built this
+
+Mainly for coding agents. Once I outgrew my laptop, I put old computers to work running agents around the clock, and soon had a lot of tmux sessions to juggle and maintain. Delux is for those of you doing the same with tmux, Tailscale, and SSH.
+
 ## Install
 
 For macOS and Linux. **0.1.0 binary downloads and Homebrew installation are pending publication**, not available yet. After the release and public tap are published:
@@ -48,6 +52,8 @@ delux attach dev-box project   # full-terminal attachment, without the picker
 If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--host` and add `--no-local` to show only remote computers. See `delux --help` for all options.
 
 Automatic Tailscale discovery includes only untagged, unshared computers whose known owner matches this computer's known owner. Add other computers explicitly with configured `hosts` or `--host`.
+
+Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails while both are active, check your VPN's compatibility with Tailscale; connecting by IP address instead of hostname may not help.
 
 `delux list` prints session columns aligned by display width, with a blank line between computers. It prints available results even if a computer fails, but exits with status 1. Use `--json` for scripts.
 
