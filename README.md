@@ -16,15 +16,15 @@ Mainly for coding agents. Once I outgrew my laptop, I put old computers to work 
 
 ## Install
 
-For macOS and Linux. **0.1.0 binary downloads and Homebrew installation are pending publication**, not available yet. After the release and public tap are published:
+For macOS and Linux, with [Homebrew](https://brew.sh):
 
 ```sh
 brew install delux-sh/tap/delux
 ```
 
-The release archives will cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
+[Release archives](https://github.com/delux-sh/delux/releases) cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
 
-### Build from source now
+### Build from source
 
 You'll need Rust 1.88+ and a C linker—Xcode Command Line Tools on macOS, or your Linux distribution's build tools:
 
