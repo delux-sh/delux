@@ -95,6 +95,18 @@ Use a fresh download directory and create the tap's `Formula/` directory if need
 
 Review the generated URLs, checksums, dependency declarations, and GPL-3.0-or-later license. In a clean Homebrew environment, install the reviewed formula from the published URLs with `brew install delux-sh/tap/delux`. The canonical fully qualified name grants [trust only to that formula](https://docs.brew.sh/Tap-Trust#installing-from-a-tap). Install with its dependencies, then run `brew test delux` and `brew audit --strict delux`; do not bypass dependency resolution. Publish the tap and its formula only with separate maintainer approval, then update installation documentation to say downloads and Homebrew are available.
 
+## Updating the README demo
+
+`docs/demo.gif` is recorded from the real picker against synthetic data only. `scripts/record-demo.py` starts a private loopback SSH server and isolated tmux servers with staged output, drives the picker in a PTY, and removes everything afterwards; it never reads your SSH configuration or agent, your tmux sessions, or Tailscale. Re-record after visible UI changes, then render with [agg](https://github.com/asciinema/agg):
+
+```bash
+cargo build --release --locked
+python3 scripts/record-demo.py "$PWD/target/release/delux" target/demo.cast
+agg --theme github-dark --font-size 14 --fps-cap 15 --last-frame-duration 3 target/demo.cast docs/demo.gif
+```
+
+Watch the result before committing it. Never record your own sessions, and keep every name in the walkthrough fictional.
+
 ## Pull requests
 
 - Keep each pull request to one change, with tests for new behavior.

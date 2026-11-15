@@ -4,7 +4,15 @@
 
 tmux keeps your work running. Delux helps you find it again: browse local and remote sessions in one list, preview what's on screen, and open a session in the right-hand panel. Switch back to the list without disconnecting.
 
+![Delux browsing three computers' tmux sessions, opening one in the right-hand panel, and pinning another](docs/demo.gif)
+
+*Recorded in a demo environment with synthetic computers and sessions.*
+
 Delux uses SSH and your existing tmux sessions. It can find computers through [Tailscale](https://tailscale.com), or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
+
+## Why I built this
+
+Mainly for coding agents. Once I outgrew my laptop, I put old computers to work running agents around the clock, and soon had a lot of tmux sessions to juggle and maintain. Delux is for those of you doing the same with tmux, Tailscale, and SSH.
 
 ## Install
 
@@ -44,6 +52,8 @@ delux attach dev-box project   # full-terminal attachment, without the picker
 If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--host` and add `--no-local` to show only remote computers. See `delux --help` for all options.
 
 Automatic Tailscale discovery includes only untagged, unshared computers whose known owner matches this computer's known owner. Add other computers explicitly with configured `hosts` or `--host`.
+
+Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails while both are active, check your VPN's compatibility with Tailscale; connecting by IP address instead of hostname may not help.
 
 `delux list` prints session columns aligned by display width, with a blank line between computers. It prints available results even if a computer fails, but exits with status 1. Use `--json` for scripts.
 
@@ -101,6 +111,10 @@ To always include or ignore computers, create `~/.config/delux/cli.json`:
 This is a personal side project. Bug reports, small fixes, and ideas are welcome; please open an issue before starting a larger change.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO sign-offs. Report vulnerabilities [privately](SECURITY.md). [Verification notes](docs/verification.md) record tested platforms and remaining gaps.
+
+## Acknowledgements
+
+Delux leans entirely on [tmux](https://github.com/tmux/tmux), [OpenSSH](https://www.openssh.com), and [Tailscale](https://tailscale.com), and is built with [Ratatui](https://ratatui.rs) and [vt100](https://github.com/doy/vt100-rust). Thank you to the people who make them.
 
 ## License
 
