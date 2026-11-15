@@ -4,8 +4,6 @@ use crate::options::Options;
 use crate::process::run_command_with_env;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 use std::time::Duration;
 
 const DISCOVERY_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
@@ -166,11 +164,7 @@ pub fn tailscale_command() -> Option<String> {
             if !candidate.is_file() {
                 continue;
             }
-            let Ok(c_path) = CString::new(candidate.as_os_str().as_bytes()) else {
-                continue;
-            };
-            // SAFETY: c_path is a valid NUL-terminated pathname; access retains no pointer.
-            if unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } != 0 {
+            if rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_err() {
                 continue;
             }
             // Never execute a program found relative to the working directory.

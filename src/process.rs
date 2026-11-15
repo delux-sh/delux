@@ -1,9 +1,11 @@
 use std::fmt;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use crate::cancel::{Cancel, CommandGuard};
 use crate::terminal::{TerminalState, restore_terminal, terminal_state};
@@ -62,7 +64,7 @@ struct RestoreStdin(Option<TerminalState>);
 impl Drop for RestoreStdin {
     fn drop(&mut self) {
         if let Some(state) = &self.0 {
-            restore_terminal(libc::STDIN_FILENO, state);
+            restore_terminal(rustix::stdio::stdin(), state);
         }
     }
 }
@@ -102,7 +104,7 @@ pub fn run_command_with_env(
     }
     let started = Instant::now();
     let _restore = RestoreStdin(if interactive {
-        terminal_state(libc::STDIN_FILENO)
+        terminal_state(rustix::stdio::stdin())
     } else {
         None
     });
@@ -118,13 +120,7 @@ pub fn run_command_with_env(
         // SAFETY: this closure only calls the async-signal-safe setsid syscall
         // and constructs an errno value before exec, without allocation or locks.
         unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
+            command.pre_exec(|| rustix::process::setsid().map(|_| ()).map_err(Into::into));
         }
     }
     for &(name, value) in extra_env {
@@ -153,16 +149,10 @@ pub fn run_command_with_env(
     result
 }
 
-fn nonblocking(fd: RawFd) -> io::Result<()> {
-    // SAFETY: both fcntl operations inspect/change flags on a borrowed live fd.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: F_SETFL takes an integer flag word and preserves existing flags.
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
+fn nonblocking(fd: impl AsFd) -> io::Result<()> {
+    let fd = fd.as_fd();
+    let flags = rustix::fs::fcntl_getfl(fd)?;
+    rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK)?;
     Ok(())
 }
 
@@ -179,7 +169,7 @@ fn collect_output(
         child.stderr.take().map(OwnedFd::from),
     ];
     for pipe in pipes.iter().flatten() {
-        nonblocking(pipe.as_raw_fd()).map_err(|error| CommandError::Io(error.to_string()))?;
+        nonblocking(pipe).map_err(|error| CommandError::Io(error.to_string()))?;
     }
     let mut output = [Vec::new(), Vec::new()];
     let mut size = 0;
@@ -207,55 +197,63 @@ fn collect_output(
         {
             break;
         }
-        let mut poll = pipes.each_ref().map(|pipe| libc::pollfd {
-            fd: pipe.as_ref().map_or(-1, AsRawFd::as_raw_fd),
-            events: libc::POLLIN,
-            revents: 0,
-        });
         // Short polling also detects root exit when descendants keep its pipes
         // open. Each iteration reads at most one chunk per stream for fairness.
         let mut delay = Duration::from_millis(10).min(timeout.saturating_sub(started.elapsed()));
         if let Some(start) = drain_started {
             delay = delay.min(Duration::from_millis(100).saturating_sub(start.elapsed()));
         }
-        let millis = delay.as_millis().max(1) as libc::c_int;
-        // SAFETY: poll is a valid array of two descriptors; -1 entries are ignored.
-        let ready = unsafe { libc::poll(poll.as_mut_ptr(), poll.len() as libc::nfds_t, millis) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
+        let delay = Timespec {
+            tv_sec: 0,
+            tv_nsec: (delay.as_millis().max(1) * 1_000_000) as _,
+        };
+        // Borrow descriptors only during poll so EOF can close each pipe below.
+        // Compact the two entries on the stack: rustix requires live borrowed
+        // descriptors, rather than libc's -1 sentinel for closed streams.
+        let mut events = [PollFlags::empty(); 2];
+        let ready = match (&pipes[0], &pipes[1]) {
+            (Some(stdout), Some(stderr)) => {
+                let mut descriptors = [
+                    PollFd::new(stdout, PollFlags::IN),
+                    PollFd::new(stderr, PollFlags::IN),
+                ];
+                let result = poll(&mut descriptors, Some(&delay));
+                events = descriptors.map(|descriptor| descriptor.revents());
+                result
+            }
+            (Some(pipe), None) | (None, Some(pipe)) => {
+                let mut descriptors = [PollFd::new(pipe, PollFlags::IN)];
+                let result = poll(&mut descriptors, Some(&delay));
+                events[usize::from(pipes[0].is_none())] = descriptors[0].revents();
+                result
+            }
+            (None, None) => poll(&mut [], Some(&delay)),
+        };
+        if let Err(error) = ready {
+            if error == rustix::io::Errno::INTR {
                 continue;
             }
             return Err(CommandError::Io(error.to_string()));
         }
         for index in 0..pipes.len() {
-            if poll[index].revents == 0 {
+            if events[index].is_empty() {
                 continue;
             }
-            if poll[index].revents & libc::POLLNVAL != 0 {
-                return Err(CommandError::Io(
-                    io::Error::from_raw_os_error(libc::EBADF).to_string(),
-                ));
+            if events[index].contains(PollFlags::NVAL) {
+                return Err(CommandError::Io(rustix::io::Errno::BADF.to_string()));
             }
-            // SAFETY: buffer is writable for its length and the descriptor is
-            // owned by pipes[index], which remains live for the read.
-            let count =
-                unsafe { libc::read(poll[index].fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-            if count < 0 {
-                let error = io::Error::last_os_error();
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                ) {
-                    continue;
-                }
-                return Err(CommandError::Io(error.to_string()));
-            }
+            let count = match rustix::io::read(
+                pipes[index].as_ref().expect("ready output pipe"),
+                &mut buffer,
+            ) {
+                Ok(count) => count,
+                Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => continue,
+                Err(error) => return Err(CommandError::Io(error.to_string())),
+            };
             if count == 0 {
                 pipes[index] = None;
                 continue;
             }
-            let count = count as usize;
             if count > output_limit - size {
                 return Err(CommandError::OutputLimit(output_limit));
             }
@@ -276,6 +274,7 @@ fn collect_output(
 mod tests {
     use std::fs::File;
     use std::io::{Read, Write};
+    use std::os::fd::RawFd;
     use std::path::Path;
     use std::sync::mpsc;
     use std::thread;
@@ -660,7 +659,7 @@ mod tests {
         assert_eq!(before.c_line, after.c_line);
     }
 
-    // Re-executed inside a session whose stdin and stderr are the PTY slave.
+    // Re-executed to isolate terminal settings and process-local syscall filters.
     // The normal test run has no mode and returns without creating a subprocess.
     #[test]
     fn command_helper_process() {
@@ -710,6 +709,93 @@ mod tests {
                 assert_eq!(std::fs::read(&marker).unwrap(), b"raw");
                 println!("terminal restored");
             }
+            #[cfg(target_os = "linux")]
+            "pty-without-peer-ioctl" => {
+                // Simulate a kernel without TIOCGPTPEER only in this helper.
+                let request_offset = std::mem::offset_of!(libc::seccomp_data, args)
+                    + std::mem::size_of::<u64>()
+                    + if cfg!(target_endian = "big") { 4 } else { 0 };
+                let mut filter = [
+                    (
+                        libc::BPF_LD | libc::BPF_W | libc::BPF_ABS,
+                        0,
+                        0,
+                        std::mem::offset_of!(libc::seccomp_data, nr) as u32,
+                    ),
+                    (
+                        libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                        0,
+                        3,
+                        libc::SYS_ioctl as u32,
+                    ),
+                    (
+                        libc::BPF_LD | libc::BPF_W | libc::BPF_ABS,
+                        0,
+                        0,
+                        request_offset as u32,
+                    ),
+                    (
+                        libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                        0,
+                        1,
+                        libc::TIOCGPTPEER as u32,
+                    ),
+                    (
+                        libc::BPF_RET | libc::BPF_K,
+                        0,
+                        0,
+                        libc::SECCOMP_RET_ERRNO | libc::ENOTTY as u32,
+                    ),
+                    (libc::BPF_RET | libc::BPF_K, 0, 0, libc::SECCOMP_RET_ALLOW),
+                ]
+                .map(|(code, jt, jf, k)| libc::sock_filter {
+                    code: code as u16,
+                    jt,
+                    jf,
+                    k,
+                });
+                let program = libc::sock_fprog {
+                    len: filter.len() as u16,
+                    filter: filter.as_mut_ptr(),
+                };
+                // SAFETY: these calls restrict only this disposable helper;
+                // program points to initialized filter storage for the call.
+                unsafe {
+                    assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+                    assert_eq!(
+                        libc::prctl(
+                            libc::PR_SET_SECCOMP,
+                            libc::SECCOMP_MODE_FILTER,
+                            std::ptr::from_ref(&program),
+                            0,
+                            0,
+                        ),
+                        0
+                    );
+                    assert_eq!(libc::ioctl(-1, libc::TIOCGPTPEER, 0), -1);
+                }
+                assert_eq!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ENOTTY)
+                );
+                let mut terminal = crate::embedded::EmbeddedTerminal::spawn(
+                    &shell("test -t 0 && test -t 1 && printf legacy-pty-ok"),
+                    24,
+                    80,
+                )
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    if let Some(code) = terminal.poll().unwrap() {
+                        assert_eq!(code, 0);
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "PTY child did not exit");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                assert!(terminal.contents().contains("legacy-pty-ok"));
+                println!("legacy-pty-ok");
+            }
             mode => panic!("unknown process helper mode: {mode}"),
         }
         io::stdout().flush().unwrap();
@@ -725,6 +811,33 @@ mod tests {
     #[test]
     fn run_command_interactive_cancellation_restores_terminal() {
         run_interactive_command_helper("interactive-cancel-runner", "terminal restored\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn embedded_pty_works_without_peer_ioctl() {
+        let _environment = env_read();
+        let args = [
+            std::env::current_exe()
+                .unwrap()
+                .into_os_string()
+                .into_string()
+                .unwrap(),
+            "--exact".into(),
+            "process::tests::command_helper_process".into(),
+            "--nocapture".into(),
+        ];
+        let result = run_command_with_env(
+            &Cancel::new(),
+            &args,
+            Duration::from_secs(5),
+            false,
+            &[("DELUX_PROCESS_TEST_MODE", "pty-without-peer-ioctl")],
+            COMMAND_OUTPUT_LIMIT,
+        )
+        .unwrap();
+        assert_eq!(result.code, 0, "{result:?}");
+        assert!(result.stdout.contains("legacy-pty-ok"), "{result:?}");
     }
 
     fn run_interactive_command_helper(mode: &str, expected: &str) {

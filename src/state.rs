@@ -2,7 +2,6 @@ use crate::files::{FILE_LIMIT, read_utf8, xdg_path};
 use serde::{Deserialize, Serialize};
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -106,13 +105,10 @@ pub(crate) fn locked_update<T>(
         .open(&lock_path)
         .map_err(|error| format!("open {}: {error}", lock_path.display()))?;
     loop {
-        // SAFETY: lock owns this descriptor until the read-modify-write completes.
-        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            break;
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(format!("lock {}: {error}", lock_path.display()));
+        match rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive) {
+            Ok(()) => break,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(format!("lock {}: {error}", lock_path.display())),
         }
     }
     let (value, raw) = update(target_path)?;

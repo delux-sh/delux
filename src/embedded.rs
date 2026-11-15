@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 use std::io::{self, Read};
 use std::num::NonZeroU16;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, waitid};
 use unicode_width::UnicodeWidthStr;
 
 const INPUT_LIMIT: usize = 1024 * 1024;
@@ -306,11 +307,8 @@ impl EmbeddedTerminal {
         // between fork and exec. Stdio has already been installed on fd 0.
         unsafe {
             command.pre_exec(|| {
-                if libc::setsid() == -1
-                    || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) == -1
-                {
-                    return Err(io::Error::last_os_error());
-                }
+                rustix::process::setsid()?;
+                rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())?;
                 Ok(())
             });
         }
@@ -331,7 +329,7 @@ impl EmbeddedTerminal {
         };
         if let Some(output) = &terminal.output {
             // `terminal` owns the child already, so failure still tears it down.
-            nonblocking(output.stream.as_raw_fd())?;
+            nonblocking(&output.stream)?;
         }
         Ok(terminal)
     }
@@ -379,27 +377,17 @@ impl EmbeddedTerminal {
         self.read_captured_output()?;
         self.read_output()?;
         if self.exit_status.is_none() {
-            // SAFETY: zero is valid for siginfo_t; waitid writes to this local.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: this Child exclusively owns its unreaped PID. WNOWAIT
-            // prevents PID reuse between observation and group cleanup.
-            let result = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.child.as_ref().expect("owned terminal child").id() as libc::id_t,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
-            };
-            if result == -1 {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-            } else if matches!(
-                info.si_code,
-                libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
+            // NOWAIT reserves this child's PID until group cleanup and reaping.
+            let pid = Pid::from_child(self.child.as_ref().expect("owned terminal child"));
+            let info = match waitid(
+                WaitId::Pid(pid),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
             ) {
+                Ok(info) => info,
+                Err(rustix::io::Errno::INTR) => None,
+                Err(error) => return Err(error.into()),
+            };
+            if info.is_some_and(|info| info.exited() || info.killed() || info.dumped()) {
                 // Darwin may report CLD_STOPPED even with WEXITED; it is not
                 // permission to kill or reap a still-live client.
                 self.kill_group();
@@ -450,37 +438,32 @@ impl EmbeddedTerminal {
         let mut buffer = [0; 4096];
         let mut total = 0;
         for _ in 0..IO_CALLS {
-            // SAFETY: master is live and the buffer is writable for its length.
-            let count =
-                unsafe { libc::read(self.master_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
-            if count > 0 {
-                let count = count as usize;
-                self.process_output(&buffer[..count]);
-                if self.parser.callbacks().overflow {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "terminal query replies exceeded the input queue",
-                    ));
-                }
-                total += count;
-                if total >= IO_BUDGET {
+            match rustix::io::read(self.master_fd(), &mut buffer) {
+                Ok(0) => {
+                    self.eof = true;
                     return Ok(());
                 }
-            } else if count == 0 {
-                self.eof = true;
-                return Ok(());
-            } else {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::EIO) {
+                Ok(count) => {
+                    self.process_output(&buffer[..count]);
+                    if self.parser.callbacks().overflow {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "terminal query replies exceeded the input queue",
+                        ));
+                    }
+                    total += count;
+                    if total >= IO_BUDGET {
+                        return Ok(());
+                    }
+                }
+                Err(rustix::io::Errno::IO) => {
                     // Linux reports a closed PTY slave as EIO instead of EOF.
                     self.eof = true;
                     return Ok(());
                 }
-                match error.kind() {
-                    io::ErrorKind::WouldBlock => return Ok(()),
-                    io::ErrorKind::Interrupted => continue,
-                    _ => return Err(error),
-                }
+                Err(rustix::io::Errno::AGAIN) => return Ok(()),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(())
@@ -490,7 +473,7 @@ impl EmbeddedTerminal {
         if self.eof || self.exit_status.is_some() {
             return Ok(());
         }
-        let master = self.master_fd();
+        let master = self.master.as_ref().expect("open terminal PTY");
         let queue = &mut self.parser.callbacks_mut().pending;
         let mut total = 0;
         for _ in 0..IO_CALLS {
@@ -500,30 +483,22 @@ impl EmbeddedTerminal {
             if bytes.is_empty() {
                 break;
             }
-            // SAFETY: bytes refers to initialized storage, and master is live.
-            let count = unsafe { libc::write(master, bytes.as_ptr().cast(), bytes.len()) };
-            if count > 0 {
-                let count = count as usize;
-                queue.drain(..count);
-                total += count;
-                if total == IO_BUDGET {
-                    break;
+            match rustix::io::write(master, bytes) {
+                Ok(0) => break,
+                Ok(count) => {
+                    queue.drain(..count);
+                    total += count;
+                    if total == IO_BUDGET {
+                        break;
+                    }
                 }
-            } else if count == 0 {
-                break;
-            } else {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::EIO)
-                    || error.kind() == io::ErrorKind::BrokenPipe
-                {
+                Err(rustix::io::Errno::IO | rustix::io::Errno::PIPE) => {
                     queue.clear();
                     break;
                 }
-                match error.kind() {
-                    io::ErrorKind::WouldBlock => break,
-                    io::ErrorKind::Interrupted => continue,
-                    _ => return Err(error),
-                }
+                Err(rustix::io::Errno::AGAIN) => break,
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(())
@@ -534,16 +509,13 @@ impl EmbeddedTerminal {
         if self.parser.screen().size() == (rows, cols) {
             return Ok(());
         }
-        let size = libc::winsize {
+        let size = rustix::termios::Winsize {
             ws_row: rows.get(),
             ws_col: cols.get(),
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        // SAFETY: size points to a valid winsize and master is a live PTY.
-        if unsafe { libc::ioctl(self.master_fd(), libc::TIOCSWINSZ, &size) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        rustix::termios::tcsetwinsize(self.master_fd(), size)?;
         self.parser.set_size(rows, cols);
         self.parser.callbacks_mut().synchronized = None;
         self.display_dirty = true;
@@ -709,17 +681,17 @@ impl EmbeddedTerminal {
         }
     }
 
-    fn master_fd(&self) -> RawFd {
-        self.master.as_ref().expect("open terminal PTY").as_raw_fd()
+    fn master_fd(&self) -> BorrowedFd<'_> {
+        self.master.as_ref().expect("open terminal PTY").as_fd()
     }
 
     fn kill_group(&self) {
-        // SAFETY: only called before this Child has been reaped, so its PID
+        // Only called before this Child has been reaped, so its PID
         // cannot be reused. setsid made that PID the client's process group.
         // A ControlPersist master daemonizes into a different session/group;
         // tmux's server likewise remains independent of this attached client.
-        let pid = self.child.as_ref().expect("owned terminal child").id();
-        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+        let pid = Pid::from_child(self.child.as_ref().expect("owned terminal child"));
+        let _ = rustix::process::kill_process_group(pid, Signal::KILL);
     }
 }
 
@@ -762,8 +734,9 @@ fn open_pty(rows: u16, cols: u16) -> io::Result<(OwnedFd, OwnedFd)> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // SAFETY: all output pointers are valid. Null termios requests the new
-    // slave's cooked platform defaults, NOT the picker's raw-mode stdin flags.
+    // Keep libc's portable PTY allocation: Linux need not implement TIOCGPTPEER.
+    // SAFETY: all output pointers are valid. Null termios requests cooked
+    // platform defaults, not the picker's raw stdin settings.
     if unsafe {
         libc::openpty(
             &mut master,
@@ -776,24 +749,19 @@ fn open_pty(rows: u16, cols: u16) -> io::Result<(OwnedFd, OwnedFd)> {
     {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: openpty transferred ownership of both fresh file descriptors.
+    // SAFETY: openpty transferred ownership of these two fresh descriptors.
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
     for fd in [&master, &slave] {
-        // SAFETY: fcntl modifies only flags on this owned file descriptor.
-        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-            return Err(io::Error::last_os_error());
-        }
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
     }
-    nonblocking(master.as_raw_fd())?;
+    nonblocking(&master)?;
     Ok((master, slave))
 }
 
-fn nonblocking(fd: RawFd) -> io::Result<()> {
-    // SAFETY: the caller owns this live descriptor; preserve its existing flags.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
+fn nonblocking(fd: impl AsFd) -> io::Result<()> {
+    let fd = fd.as_fd();
+    let flags = rustix::fs::fcntl_getfl(fd)?;
+    rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK)?;
     Ok(())
 }
 
@@ -912,6 +880,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::os::fd::AsRawFd;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -1552,7 +1521,7 @@ mod tests {
         // SAFETY: termios is a plain C value and master is a live PTY.
         let mut mode: libc::termios = unsafe { std::mem::zeroed() };
         assert_eq!(
-            unsafe { libc::tcgetattr(terminal.master_fd(), &mut mode) },
+            unsafe { libc::tcgetattr(terminal.master_fd().as_raw_fd(), &mut mode) },
             0
         );
         assert_ne!(mode.c_lflag & libc::ICANON, 0);
@@ -1595,14 +1564,13 @@ mod tests {
         let pid = terminal.child.as_ref().unwrap().id() as libc::pid_t;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let mut pending = libc::pollfd {
-                fd: terminal.master_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
+            let mut pending = [rustix::event::PollFd::from_borrowed_fd(
+                terminal.master_fd(),
+                rustix::event::PollFlags::IN,
+            )];
             // Observe readiness without draining the child's output.
-            assert!(unsafe { libc::poll(&mut pending, 1, 0) } >= 0);
-            if pending.revents & libc::POLLIN != 0 {
+            rustix::event::poll(&mut pending, Some(&rustix::event::Timespec::default())).unwrap();
+            if pending[0].revents().contains(rustix::event::PollFlags::IN) {
                 break;
             }
             assert!(Instant::now() < deadline, "client produced no output");

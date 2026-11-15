@@ -317,7 +317,7 @@ pub fn scan(cancel: &Cancel, workers: Vec<Worker>) -> mpsc::Receiver<Inventory> 
 }
 
 pub fn interactive_terminal() -> bool {
-    is_terminal(libc::STDIN_FILENO) && is_terminal(libc::STDOUT_FILENO)
+    is_terminal(rustix::stdio::stdin()) && is_terminal(rustix::stdio::stdout())
 }
 
 fn tmux_socket(value: &str) -> Option<&str> {
@@ -375,8 +375,8 @@ pub fn attach(
     } else {
         attach_script(session, false)?
     };
-    let state =
-        terminal_state(libc::STDIN_FILENO).ok_or_else(|| io::Error::last_os_error().to_string())?;
+    let state = terminal_state(rustix::stdio::stdin())
+        .ok_or_else(|| io::Error::last_os_error().to_string())?;
     let _attachment = crate::ssh_mux::begin_attachment();
     let result = (|| {
         let args = computer_command(worker, &script, true, true);
@@ -427,7 +427,7 @@ pub fn attach(
             }
         }
     })();
-    restore_terminal(libc::STDIN_FILENO, &state);
+    restore_terminal(rustix::stdio::stdin(), &state);
     result.map(|code| {
         if switching && code == 0 {
             AttachOutcome::Switched

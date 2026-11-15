@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fs::{self, DirBuilder};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -110,8 +109,7 @@ impl Multiplexer {
 }
 
 fn current_uid() -> u32 {
-    // SAFETY: geteuid has no arguments or failure mode.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 fn directory_path(runtime: Option<&std::ffi::OsStr>, uid: u32, pid: u32) -> PathBuf {
@@ -156,12 +154,13 @@ fn safe_control_directory(directory: &Path, uid: u32) -> bool {
 }
 
 fn process_is_gone(pid: u32) -> bool {
-    if pid == 0 || pid > libc::pid_t::MAX as u32 {
+    let Ok(raw_pid) = i32::try_from(pid) else {
         return false;
-    }
-    // SAFETY: signal zero checks process existence without sending a signal.
-    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    };
+    let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
+        return false;
+    };
+    rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH)
 }
 
 fn sweep_stale_directories(base: &Path, uid: u32) {
@@ -210,47 +209,25 @@ fn remove_socket_directory(directory: &Path, require_stale: bool) {
 }
 
 fn socket_is_stale(path: &Path) -> bool {
-    // Never block startup on a live master's full accept queue.
-    // SAFETY: socket takes scalar arguments and returns a fresh descriptor.
-    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-    if fd == -1 {
+    use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, connect, socket};
+
+    // Never block startup on a live master's full accept queue. Darwin does
+    // not support socket creation flags, so set them on the owned descriptor.
+    let Ok(fd) = socket(AddressFamily::UNIX, SocketType::STREAM, None) else {
         return false;
-    }
-    // SAFETY: fd is a fresh descriptor owned by this function.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: fcntl changes only this owned descriptor's close-on-exec flag.
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-        return false;
-    }
-    // SAFETY: fcntl operates on a live owned socket descriptor.
-    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
-        return false;
-    }
-    // SAFETY: zero initializes all scalar fields and the pathname byte array.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    let bytes = path.as_os_str().as_bytes();
-    if bytes.len() >= address.sun_path.len() {
-        return false;
-    }
-    for (destination, source) in address.sun_path.iter_mut().zip(bytes) {
-        *destination = *source as libc::c_char;
-    }
-    let length =
-        (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
-    #[cfg(target_os = "macos")]
+    };
+    if rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC).is_err()
+        || rustix::fs::fcntl_setfl(&fd, rustix::fs::OFlags::NONBLOCK).is_err()
     {
-        address.sun_len = length as u8;
+        return false;
     }
-    // SAFETY: address holds a NUL-terminated pathname and length covers exactly
-    // its family/header and pathname within the live sockaddr_un allocation.
-    let result =
-        unsafe { libc::connect(fd.as_raw_fd(), std::ptr::from_ref(&address).cast(), length) };
-    result == -1
-        && matches!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ECONNREFUSED | libc::ENOENT)
-        )
+    let Ok(address) = SocketAddrUnix::new(path) else {
+        return false;
+    };
+    matches!(
+        connect(&fd, &address),
+        Err(rustix::io::Errno::CONNREFUSED | rustix::io::Errno::NOENT)
+    )
 }
 
 fn control_path(directory: &Path) -> String {
