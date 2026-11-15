@@ -1,8 +1,8 @@
 name: Release
 
-# A pushed v* tag builds all four targets and publishes a GitHub Release with
-# the archives, SHA256SUMS and build provenance attestations. Running it
-# manually builds the same archives as a workflow artifact without publishing.
+# A pushed v* tag publishes only after native Homebrew checks on all four
+# targets and release-environment approval. Manual runs build and check the
+# same artifacts, but never publish or change the separately managed tap.
 on:
   push:
     tags: ["v*"]
@@ -24,18 +24,32 @@ jobs:
 
   build:
     needs: check
-    runs-on: macos-latest
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check that the tag matches Cargo.toml
-        if: startsWith(github.ref, 'refs/tags/')
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Read release version and validate tag ancestry
+        id: version
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
-            exit 1
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$IS_TAG" = true ]; then
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+              exit 1
+            fi
+            # Full-history checkout is pinned to the event SHA, not a mutable
+            # tag name. A release must come from protected main's history.
+            git merge-base --is-ancestor "$GITHUB_SHA^{commit}" refs/remotes/origin/main
           fi
       - name: Install Rust
         run: |
@@ -55,17 +69,92 @@ jobs:
       - name: Install license notice generator
         run: cargo install cargo-about --locked --features cli --version "$CARGO_ABOUT_VERSION"
       - run: scripts/dist.sh
+      - name: Stage reviewed release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: cp "docs/releases/$VERSION.md" dist/RELEASE-NOTES.md
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: delux-dist
           path: dist/
           if-no-files-found: error
 
+  package:
+    name: Homebrew (${{ matrix.target }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            system: Darwin
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            system: Darwin
+            arch: x86_64
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04-arm
+            system: Linux
+            arch: aarch64
+            target: aarch64-unknown-linux-musl
+          - runner: ubuntu-24.04
+            system: Linux
+            arch: x86_64
+            target: x86_64-unknown-linux-musl
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      EXPECTED_SYSTEM: ${{ matrix.system }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Require the native runner architecture
+        run: |
+          test "$(uname -s)" = "$EXPECTED_SYSTEM"
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: delux-dist
+          path: dist
+      - name: Verify every archive checksum
+        working-directory: dist
+        run: shasum -a 256 -c SHA256SUMS
+      - uses: Homebrew/actions/setup-homebrew@ceec4e8419bb3c97ce96e9dda7738499ed5f869d
+        with:
+          stable: true
+          core: false
+          cask: false
+      - name: Install the generated formula with its dependencies
+        run: |
+          brew tap-new --no-git delux-ci/release
+          scripts/homebrew-formula.sh "$VERSION" dist/SHA256SUMS "file://$GITHUB_WORKSPACE/dist" \
+            > "$(brew --repository delux-ci/release)/Formula/delux.rb"
+          brew trust delux-ci/release
+          brew install delux-ci/release/delux
+      - name: Run formula test and strict audit
+        run: |
+          brew test delux-ci/release/delux
+          brew audit --strict delux-ci/release/delux
+      - name: Exercise the installed native picker
+        run: |
+          installed="$(brew --prefix delux-ci/release/delux)/bin/delux"
+          archive_root="delux-$VERSION-$TARGET"
+          tar -xzf "dist/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root/delux"
+          cmp "$installed" "$RUNNER_TEMP/$archive_root/delux"
+          python3 scripts/smoke-release.py "$installed" --version "$VERSION"
+
   publish:
     # Only a public repository's pushed v* tag publishes; manual runs never do.
     if: github.event.repository.private == false && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
+    needs: [build, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: write
@@ -86,38 +175,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --title "Delux $GITHUB_REF_NAME" --generate-notes
-
-  homebrew:
-    needs: publish
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: delux-dist
-          path: dist
-      # HOMEBREW_TAP_TOKEN: a fine-grained token with contents read/write on
-      # <owner>/homebrew-tap only. Without it, update the tap by hand.
-      - name: Update the Homebrew tap
-        env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the tap update"
-            exit 0
-          fi
-          version=${GITHUB_REF_NAME#v}
-          scripts/homebrew-formula.sh "$version" dist/SHA256SUMS > delux.rb
-          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${GITHUB_REPOSITORY_OWNER}/homebrew-tap.git" tap
-          mkdir -p tap/Formula
-          cp delux.rb tap/Formula/delux.rb
-          cd tap
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/delux.rb
-          git commit -m "delux $version"
-          git push
+            --repo "$GITHUB_REPOSITORY" --title "Delux $GITHUB_REF_NAME" \
+            --verify-tag --notes-file dist/RELEASE-NOTES.md

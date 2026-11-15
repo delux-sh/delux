@@ -1,5 +1,17 @@
 # Verification record
 
+## 0.1.0 Homebrew preparation
+
+[Release dry run 43662052243](https://github.com/delux-sh/delux/actions/runs/43662052243) passed at `f3bd4cc`. It ran Linux/macOS CI and the minimum-Rust check, built all four GPL archives, and verified their checksums on native runners. Every platform installed the generated formula with full dependency resolution, passed `brew test` and `brew audit --strict`, and verified the installed executable was byte-identical to its archive.
+
+Real-PTY checks of those installed executables covered local inventory, embedded attachment, shell input, Shift-Tab focus, native tmux detachment, clean exit, and preservation of the existing session and pane. Each used an isolated default tmux socket and temporary configuration. No real user sessions were touched. The native checks use macOS 15 on both architectures and Ubuntu 24.04 on both architectures; they do not exercise physical mouse/cursor behavior or archived binaries over real remote SSH connections.
+
+The first run caught two formula issues: OpenSSH needs an explicit Linux-only dependency rather than `uses_from_macos`, and the formula's tmux socket must remain inside Homebrew's macOS sandbox test directory. Both were fixed before the successful run. Homebrew reported a Linux Landlock limitation on complete network denial; the isolated local-session checks passed without disabling Homebrew's sandbox.
+
+Actionlint, ShellCheck, a local strict formula audit, and the local PTY smoke harness also passed. Publication was skipped as intended. No tag, binary release, or public formula was created. Later documentation edits add the explicit Homebrew formula-trust instructions and this record; the validated program, formula, and workflow are unchanged.
+
+The older records below retain their original scope; this run supersedes their packaging and native-runtime gaps.
+
 ## GPL source-only preparation
 
 The GPL-3.0-or-later source tree passed formatting, Clippy with warnings denied, the macOS ARM64 suite (152 passed; one subprocess helper ignored in the normal run and exercised by its parent), Rust 1.88 all-target checks, Actionlint, and ShellCheck. Gitleaks found no secrets in a copy of the complete publication source tree.
@@ -64,7 +76,7 @@ The rebuilt macOS ARM64 binary passed an isolated real-PTY/OpenSSH run: unknown-
 
 The earlier full-suite and four-archive results below precede both follow-ups. Distribution is deferred; build and verify fresh archives before a binary release.
 
-## Current pre-release review (November 12, 2026)
+## Earlier pre-release review (November 12, 2026)
 
 These results cover the local pre-release development tree. They are not evidence of a published binary release.
 
@@ -77,12 +89,12 @@ The review fixed concurrent config-update loss, oversized writes that could not 
 
 ## Platform coverage
 
-| Platform | Latest evidence | Runtime gap |
+| Platform | Latest evidence | Remaining limits |
 |---|---|---|
-| macOS ARM64 | Full suite, real PTYs and loopback SSH, interactive picker, archive installation through Homebrew | Physical cursor blink timing in cmux was not measured |
-| Linux x86_64 | Earlier static musl archive builds; older October suite, discovery, installation, and two-machine attachment passed | Current embedded-terminal and review changes need a fresh Linux run |
-| Linux ARM64 | Earlier static musl archive builds; older suite passed on Debian 13 and an archive ran on an aarch64 Yocto board | Current embedded-terminal and review changes need a fresh Linux run |
-| Intel macOS | Earlier release archive builds | No Intel Mac runtime test yet |
+| macOS ARM64 | Native archive installation, formula test/audit, and real-PTY picker checks on macOS 15; source CI and earlier loopback SSH checks | Physical cursor blink timing in cmux was not measured |
+| Linux x86_64 | Native musl archive installation, formula test/audit, and real-PTY picker checks on Ubuntu 24.04; Linux source CI | Packaged remote SSH and physical terminal interaction not exercised in this run |
+| Linux ARM64 | Native musl archive installation, formula test/audit, and real-PTY picker checks on Ubuntu 24.04 | Packaged remote SSH and physical terminal interaction not exercised in this run |
+| Intel macOS | Native archive installation, formula test/audit, and real-PTY picker checks on macOS 15 | Packaged remote SSH and physical terminal interaction not exercised in this run |
 
 The Linux cross-linker emitted an upstream warning about an ignored, deprecated optimization setting; both archives built successfully. The previously used Linux workstation rejected batch-mode SSH authentication during this review cycle, so its older results do not verify the new changes.
 
@@ -101,7 +113,7 @@ Freeze regressions cover stopped children and backpressured PTY cleanup. An earl
 
 Upstream tmux 3.2a was previously built and exercised against live preview, attachment, switching, vanished-session, and replacement-server regressions. Homebrew's latest smoke test used tmux 3.8.
 
-## Distribution and Homebrew
+## Earlier distribution and Homebrew checks
 
 Before the GPL cutover, all four release archives built and their SHA-256 checksums verified. Each archive contained the executable, README, project licenses, generated dependency notices, Rust toolchain notices, and musl attribution. Those artifacts are not for publication; packaging and notices must be verified again for a GPL binary release.
 
@@ -113,8 +125,8 @@ Temporary installations, taps, servers, keys, and interactive fixtures were remo
 
 - Require passing CI for the exact source tree intended for publication. Older private CI and distribution runs do not establish readiness of the current tree.
 - Complete the runtime checks above, or clearly retain the documented platform limitations.
-- Confirm delivery to `security@delux.sh`. Private vulnerability reporting must be enabled when the repository becomes public; it is unavailable while private.
-- Configure branch/tag rules and release-environment approvals. Do not publish a release tag while binary distribution and Homebrew are deferred.
+- GitHub private vulnerability reporting is enabled and is the reporting channel in `SECURITY.md`.
+- Main is protected. Only `replghost` can create `v*` tags; a separate ruleset prohibits updating or deleting them without bypass actors. The `release` environment accepts only `v*` tags, requires `replghost` approval, and disables administrative approval bypass. Do not create a release tag without explicit publication approval.
 - Delux's copyright is held personally by William Chen. Keep the old private history and unreviewed app/LAN work out of the public repository.
 
 Known UI limitation: showing or hiding a filter, notice, or warning can still resize the terminal vertically because those status lines occupy full-width rows. List-content changes alone no longer resize a connected terminal in the stacked layout.
