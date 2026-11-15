@@ -58,7 +58,7 @@ Don't drive the picker with automated keystrokes against your own sessions or ot
 
 ## Preparing and publishing a release
 
-0.1.0 publication is pending: there are no published Delux binaries or public Homebrew formula, and the tap remains private. Source installation is available. Preparation and a manual Release workflow dispatch do not publish anything. Tagging, release approval, and tap publication are separate, explicit maintainer decisions.
+Releases are published from protected `main` and installed through the project's Homebrew tap. Preparation and a manual Release workflow dispatch do not publish anything. Tagging, release approval, and tap updates are separate, explicit maintainer decisions.
 
 `scripts/dist.sh` replaces the generated `dist/` directory and builds all supported targets for the current host. Pass target triples to build a subset. In addition to Rust, packaging needs:
 

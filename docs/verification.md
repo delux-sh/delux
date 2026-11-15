@@ -1,5 +1,11 @@
 # Verification record
 
+## 0.1.0 release rehearsal (November 15, 2026)
+
+A [nonpublishing Release run](https://github.com/delux-sh/delux/actions/runs/43764792273) passed at `f2817a9`, the last commit before the published-installation wording. It ran Linux and macOS CI and the minimum Rust version check, built all four GPL archives, and installed the generated formula with full dependencies on native macOS Apple Silicon and Intel and native Linux ARM64 and x86_64 runners. Each passed `brew test`, `brew audit --strict`, a byte comparison against its archive, and the real-PTY picker smoke check. The publish job was skipped.
+
+This run covers the selection fix after accepting a filter, the README demo, and the stale-sweep test change. That test failed once on Linux before the change; the cause was inferred from the test rather than reproduced, so a recurrence is possible. Packaged remote SSH, physical terminals, and trackpad behaviour were not exercised.
+
 ## Separate maintenance refactor
 
 The picker is split into private input, layout, drawing, runtime, and test modules, with model/update logic in `src/tui.rs`. Typed `rustix` calls replace manual production IO, process, socket, and locking boundaries. Seven production `unsafe` blocks remain around `pre_exec`, libc PTY creation/ownership, and zero-initialized termios capture/restore. Test fixtures retain their own OS boundaries. The unreachable expanded-row renderer was removed.
