@@ -679,7 +679,15 @@ fn run_with_cancel(cancel: &Cancel, args: &[String]) -> i32 {
         return 0;
     }
     if opts.version {
-        let _ = writeln!(io::stdout(), "delux {}", env!("CARGO_PKG_VERSION"));
+        // Builds outside a Git checkout, such as from a source archive, have no commit.
+        let _ = match option_env!("DELUX_COMMIT") {
+            Some(commit) => writeln!(
+                io::stdout(),
+                "delux {} ({commit})",
+                env!("CARGO_PKG_VERSION")
+            ),
+            None => writeln!(io::stdout(), "delux {}", env!("CARGO_PKG_VERSION")),
+        };
         return 0;
     }
     crate::ssh_mux::begin();
