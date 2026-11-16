@@ -663,6 +663,10 @@ impl Picker {
                 };
                 match result {
                     Ok((session, sessions)) => {
+                        // A client's exit can start a scan while creation is
+                        // running. Ignore its older inventory for this computer,
+                        // but let the remaining computers finish refreshing.
+                        self.pending.remove(&worker.key);
                         entry.update_inventory(
                             Inventory {
                                 worker: worker.clone(),

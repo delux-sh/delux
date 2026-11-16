@@ -480,9 +480,11 @@ fn creation_argument(value: &str) -> String {
 pub fn create_script(request: &NewSession) -> Result<String, String> {
     request.validate()?;
     let mut script = String::from(TMUX_PRELUDE);
-    // Check encoding tools before the first possible mutation.
+    // Check tools before mutation without leaking the diagnostic locale into
+    // a newly started server and every shell it subsequently creates.
+    script.push_str("(\n");
     script.push_str(encoding_prelude!());
-    script.push_str("directory=");
+    script.push_str(") || exit $?\ndirectory=");
     script.push_str(&shell_quote(&request.directory));
     script.push_str(
         r#"
@@ -2235,6 +2237,7 @@ esac
             .insert("HOME".into(), f._temp.path().as_os_str().into());
         f.env
             .insert("XDG_CONFIG_HOME".into(), f._temp.path().as_os_str().into());
+        f.env.insert("LC_ALL".into(), "POSIX".into());
         let subdirectory = f._temp.path().join("literal #{pid}");
         fs::create_dir(&subdirectory).unwrap();
         for (index, directory) in ["", "~", "~/literal #{pid}"].into_iter().enumerate() {
@@ -2266,6 +2269,9 @@ esac
             assert_eq!(created.server_start, observed.server_start);
             assert_eq!(created.created, observed.created);
             assert_eq!(created.socket_path, observed.socket_path);
+            let locale = f.tmux(&["show-environment", "-g", "LC_ALL"]);
+            assert_eq!(locale.status, 0, "{locale:?}");
+            assert_eq!(locale.stdout.trim(), "LC_ALL=POSIX");
         }
     }
 

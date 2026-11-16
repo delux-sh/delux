@@ -196,6 +196,11 @@ impl Picker {
             }
             FormAction::Submit(request) => {
                 let form = self.creation.as_mut()?;
+                if self.scanning {
+                    form.busy = false;
+                    form.error = "Wait for the rescan to finish before creating a session.".into();
+                    return None;
+                }
                 if !self.entries.iter().any(|entry| {
                     entry.worker.key == form.worker.key
                         && entry.worker.destination == form.worker.destination

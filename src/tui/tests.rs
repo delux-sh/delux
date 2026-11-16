@@ -423,6 +423,56 @@ fn creation_success_appends_without_reordering_or_pinning_and_selects_exact_iden
 }
 
 #[test]
+fn creation_success_rejects_an_older_inflight_scan() {
+    let computer = worker("box", "box");
+    let other = worker("other", "other");
+    let mut harness = Harness::new(
+        vec![computer.clone(), other.clone()],
+        vec![ready(&computer, vec![]), ready(&other, vec![])],
+    );
+    harness.press(&["n", "new-work"]);
+    let Some(Command::Create { worker, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    // An existing client's exit can refresh while creation is in flight.
+    let Command::Discover { generation, .. } = harness.picker.rescan(false) else {
+        panic!("expected discovery");
+    };
+    let result = harness.picker.update(Message::Discovered {
+        generation,
+        result: Ok((vec![computer.clone(), other.clone()], String::new())),
+    });
+    assert!(matches!(result, Some(Command::Scan { .. })));
+    let created = session("$2", "new-work");
+    let result = harness.picker.update(Message::Created {
+        worker,
+        result: Ok((created.clone(), vec![created.clone()])),
+    });
+    harness.drive(result);
+    harness.picker.update(Message::Inventory {
+        generation,
+        inventory: Some(ready(&computer, vec![])),
+    });
+    let other_session = session("$3", "other-work");
+    harness.picker.update(Message::Inventory {
+        generation,
+        inventory: Some(ready(&other, vec![other_session.clone()])),
+    });
+    harness.picker.update(Message::Inventory {
+        generation,
+        inventory: None,
+    });
+    assert!(!harness.picker.scanning);
+    assert!(harness.picker.pending.is_empty());
+    assert_eq!(harness.picker.selected_session().unwrap().1, created);
+    assert_eq!(harness.picker.entries[1].sessions(), &[other_session]);
+    assert_eq!(harness.launched().len(), 1);
+}
+
+#[test]
 fn creation_failure_rescans_without_retrying_or_replacing_the_client() {
     let mut harness = terminal_harness(&["/bin/cat"]);
     let started = harness.picker.active.as_ref().unwrap().started;
@@ -442,12 +492,31 @@ fn creation_failure_rescans_without_retrying_or_replacing_the_client() {
     });
     assert!(matches!(result, Some(Command::Discover { .. })));
     assert!(!harness.picker.reorder_on_scan);
+    assert!(
+        harness
+            .picker
+            .creation
+            .as_ref()
+            .unwrap()
+            .error
+            .contains("timed out")
+    );
+    // A repeated Enter must not race the required uncertainty rescan.
+    harness.press(&["enter"]);
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(!harness.picker.creation.as_ref().unwrap().busy);
     harness.drive(result);
     assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
     assert!(harness.picker.creation_pending.is_none());
     let form = harness.picker.creation.as_ref().unwrap();
     assert!(!form.busy);
-    assert!(form.error.contains("timed out"));
+    assert!(form.error.contains("rescan"));
+    assert!(matches!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Some(Command::Create { .. })
+    ));
     assert!(harness.launched().is_empty());
 }
 
