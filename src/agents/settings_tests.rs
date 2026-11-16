@@ -24,6 +24,7 @@ fn context(root: &TempDir) -> Context {
         Some(root.path().as_os_str().to_owned()),
         root.path().join("bin").into_os_string(),
         root.path().join("delux"),
+        root.path().join("definitions"),
         |_| None,
     )
     .unwrap()
@@ -35,6 +36,7 @@ fn invoke(context: &Context, args: &[&str]) -> (Result<i32, String>, String) {
         context,
         &args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>(),
         &mut output,
+        &mut Vec::new(),
     );
     (result, String::from_utf8(output).unwrap())
 }
@@ -153,7 +155,10 @@ fn unchanged_settings_keep_bytes_inode_and_directory_contents() {
 
 #[test]
 fn installations_leave_only_settings_backups_or_the_extension() {
-    for agent in &AGENTS[..2] {
+    for agent in AGENTS
+        .iter()
+        .filter(|agent| matches!(agent.integration, Integration::Hooks { .. }))
+    {
         let root = TempDir::new();
         let Integration::Hooks { file, .. } = agent.integration else {
             unreachable!()
@@ -176,7 +181,10 @@ fn installations_leave_only_settings_backups_or_the_extension() {
             [file.to_owned(), format!("{file}.delux-backup")]
         );
     }
-    for agent in &AGENTS[2..] {
+    for agent in AGENTS
+        .iter()
+        .filter(|agent| matches!(agent.integration, Integration::Extension { .. }))
+    {
         let Integration::Extension { file, adapter } = agent.integration else {
             unreachable!()
         };
@@ -210,7 +218,10 @@ fn installations_leave_only_settings_backups_or_the_extension() {
 
 #[test]
 fn uninstalling_an_extension_symlink_leaves_no_discovery_entry() {
-    for agent in &AGENTS[2..] {
+    for agent in AGENTS
+        .iter()
+        .filter(|agent| matches!(agent.integration, Integration::Extension { .. }))
+    {
         let Integration::Extension { file, adapter } = agent.integration else {
             unreachable!()
         };
@@ -292,10 +303,11 @@ fn output_is_quiet_on_noop_and_mentions_backups_only_when_created() {
     }
     fs::write(context.file(0), "{}").unwrap();
     fs::write(context.file(1), "{}").unwrap();
+    fs::write(context.file(2), "{}").unwrap();
     let (result, output) = invoke(&context, &["install"]);
     assert_eq!(result, Ok(0));
-    assert_eq!(output.matches("Command:").count(), 2);
-    assert_eq!(output.matches("Backup:").count(), 2);
+    assert_eq!(output.matches("Command:").count(), 3);
+    assert_eq!(output.matches("Backup:").count(), 3);
     assert!(
         output.contains(
             context
@@ -319,7 +331,7 @@ fn output_is_quiet_on_noop_and_mentions_backups_only_when_created() {
     assert_eq!(result, Ok(0));
     assert_eq!(output.lines().count(), AGENTS.len());
     assert!(!output.contains("Backup:"));
-    assert!(names(context.file(2).parent().unwrap()).is_empty());
+    assert!(names(context.file(3).parent().unwrap()).is_empty());
 }
 
 #[test]
@@ -331,8 +343,8 @@ fn failures_are_returned_after_remaining_agents_are_processed() {
             fs::create_dir_all(directory).unwrap();
         }
         fs::write(context.file(0), "invalid JSON").unwrap();
-        fs::create_dir_all(context.file(2).parent().unwrap()).unwrap();
-        fs::write(context.file(2), "unmarked user extension").unwrap();
+        fs::create_dir_all(context.file(3).parent().unwrap()).unwrap();
+        fs::write(context.file(3), "unmarked user extension").unwrap();
         if !install {
             settings::update(&AGENTS[1], &context.file(1), "delux", true).unwrap();
         }
@@ -365,7 +377,7 @@ fn failures_are_returned_after_remaining_agents_are_processed() {
         );
         assert_eq!(fs::read_to_string(context.file(0)).unwrap(), "invalid JSON");
         assert_eq!(
-            fs::read_to_string(context.file(2)).unwrap(),
+            fs::read_to_string(context.file(3)).unwrap(),
             "unmarked user extension"
         );
     }
@@ -380,14 +392,12 @@ fn failures_are_returned_after_remaining_agents_are_processed() {
         assert!(output.contains("Codex:"));
     }
     let args = ["agents", "install", "unknown"].map(String::from);
+    let mut errors = Vec::new();
+    assert_eq!(run_in(&context, &args, &mut Vec::new(), &mut errors), Ok(2));
     assert!(
-        crate::options::parse_options(&args)
-            .unwrap_err()
-            .contains("valid names: claude, codex, opencode, pi, omp")
-    );
-    assert_eq!(
-        crate::app::run(args.into_iter().map(Into::into).collect()),
-        2
+        String::from_utf8(errors)
+            .unwrap()
+            .contains("valid names: claude, codex, gemini, opencode, pi, omp")
     );
 }
 

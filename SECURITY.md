@@ -34,6 +34,8 @@ Agent setup is opt-in: `delux agents install` is the only operation that adds re
 
 Installed hooks invoke Delux with a fixed argument list. Hook payload text is never passed to a shell: the reporter reads only the fields needed for a status decision, bounds its input, and invokes tmux directly with arguments. The hook command never writes to stdout and fails silently; tmux execution is limited to two seconds.
 
+Agent definition files are the user's own configuration and choose which hooks file Delux edits. Delux writes only its fixed reporter command there; definitions cannot override the handler's command or type.
+
 ## Discovery and local data
 
 ### Which computers are contacted

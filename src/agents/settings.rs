@@ -2,7 +2,58 @@ use std::path::Path;
 
 use super::json::Json;
 
-use super::{Agent, Event, Integration, storage};
+use super::{Agent, Integration, storage};
+
+pub(super) struct Entry<'a> {
+    pub event: &'a str,
+    pub matcher: Option<&'a str>,
+    pub command: String,
+}
+
+pub(super) trait HookAgent {
+    fn entries(&self, executable: &str) -> Vec<Entry<'_>>;
+    fn owns(&self, command: &str) -> bool;
+    fn add_handler_fields(&self, fields: &mut Vec<(String, Json)>);
+}
+
+impl HookAgent for Agent {
+    fn entries(&self, executable: &str) -> Vec<Entry<'_>> {
+        let Integration::Hooks { events, .. } = self.integration else {
+            unreachable!()
+        };
+        events
+            .iter()
+            .map(|event| Entry {
+                event: event.name,
+                matcher: event.matcher,
+                command: format!(
+                    "{executable} agent-status hook {} {}",
+                    self.name, event.name
+                ),
+            })
+            .collect()
+    }
+
+    fn owns(&self, command: &str) -> bool {
+        command
+            .rsplit_once(" agent-status hook ")
+            .is_some_and(|(executable, suffix)| {
+                !executable.is_empty()
+                    && suffix.split_once(' ').is_some_and(|(name, event)| {
+                        name == self.name
+                            && !event.is_empty()
+                            && !event.chars().any(char::is_whitespace)
+                    })
+            })
+    }
+
+    fn add_handler_fields(&self, fields: &mut Vec<(String, Json)>) {
+        let Integration::Hooks { timeout, .. } = self.integration else {
+            unreachable!()
+        };
+        fields.push(("timeout".into(), Json::Number(timeout.into())));
+    }
+}
 
 fn effective_entries(entries: &[(String, Json)]) -> impl Iterator<Item = &Json> {
     entries
@@ -42,45 +93,90 @@ fn document(raw: Option<&str>, path: &Path) -> Result<Json, String> {
     Ok(value)
 }
 
-fn owned(handler: &Json, agent: &Agent) -> bool {
-    let Some(command) = handler.get("command").and_then(Json::as_str) else {
-        return false;
-    };
-    command
-        .rsplit_once(" agent-status hook ")
-        .is_some_and(|(executable, suffix)| {
-            !executable.is_empty()
-                && suffix.split_once(' ').is_some_and(|(name, event)| {
-                    name == agent.name
-                        && !event.is_empty()
-                        && !event.chars().any(char::is_whitespace)
-                })
-        })
+fn owned(handler: &Json, owns: &impl Fn(&str) -> bool) -> bool {
+    handler
+        .get("command")
+        .and_then(Json::as_str)
+        .is_some_and(owns)
 }
 
-fn group(agent: &Agent, event: &Event, command: &str) -> Json {
+fn group(entry: Entry<'_>, add_fields: &impl Fn(&mut Vec<(String, Json)>)) -> Json {
     let mut fields = Vec::new();
-    if let Some(matcher) = event.matcher {
+    if let Some(matcher) = entry.matcher {
         fields.push(("matcher".into(), Json::String(matcher.into())));
     }
-    fields.push((
-        "hooks".into(),
-        Json::Array(vec![Json::Object(vec![
-            ("type".into(), Json::String("command".into())),
-            (
-                "command".into(),
-                Json::String(format!(
-                    "{command} agent-status hook {} {}",
-                    agent.name, event.name
-                )),
-            ),
-            ("timeout".into(), Json::Number(5.into())),
-        ])]),
-    ));
+    let mut handler = vec![
+        ("type".into(), Json::String("command".into())),
+        ("command".into(), Json::String(entry.command)),
+    ];
+    add_fields(&mut handler);
+    fields.push(("hooks".into(), Json::Array(vec![Json::Object(handler)])));
     Json::Object(fields)
 }
 
-fn edited(mut value: Json, agent: &Agent, command: &str, install: bool) -> Json {
+struct ExpectedGroup<'a> {
+    event: &'a str,
+    value: Json,
+}
+
+fn expected<'a>(agent: &'a impl HookAgent, command: &str) -> Vec<ExpectedGroup<'a>> {
+    agent
+        .entries(command)
+        .into_iter()
+        .map(|entry| ExpectedGroup {
+            event: entry.event,
+            value: group(entry, &|fields| agent.add_handler_fields(fields)),
+        })
+        .collect()
+}
+
+fn reporting(
+    value: &Json,
+    expected: &[ExpectedGroup<'_>],
+    owns: &impl Fn(&str) -> bool,
+) -> &'static str {
+    let Some(hooks) = value.get("hooks").and_then(Json::as_object) else {
+        return "not installed";
+    };
+    let count: usize = effective_entries(hooks)
+        .map(|groups| {
+            groups
+                .as_array()
+                .expect("validated event")
+                .iter()
+                .map(|group| {
+                    group
+                        .get("hooks")
+                        .and_then(Json::as_array)
+                        .expect("validated group")
+                        .iter()
+                        .filter(|handler| owned(handler, owns))
+                        .count()
+                })
+                .sum::<usize>()
+        })
+        .sum();
+    if count == 0 {
+        return "not installed";
+    }
+    // Other agents can append groups after ours. Their position must not make
+    // a complete installation look partial or trigger endless reinstall churn.
+    if count == expected.len()
+        && expected.iter().all(|entry| {
+            value
+                .get("hooks")
+                .and_then(|hooks| hooks.get(entry.event))
+                .and_then(Json::as_array)
+                .is_some_and(|groups| groups.contains(&entry.value))
+        })
+    {
+        "installed"
+    } else {
+        "partly installed"
+    }
+}
+
+fn edited(mut value: Json, entries: Vec<ExpectedGroup<'_>>, owns: &impl Fn(&str) -> bool) -> Json {
     if let Some(hooks) = value.get_mut("hooks") {
         let hooks = hooks.as_object_mut().expect("validated hooks");
         let mut index = 0;
@@ -100,7 +196,7 @@ fn edited(mut value: Json, agent: &Agent, command: &str, install: bool) -> Json 
                     .and_then(Json::as_array_mut)
                     .expect("validated group");
                 let before = handlers.len();
-                handlers.retain(|handler| !owned(handler, agent));
+                handlers.retain(|handler| !owned(handler, owns));
                 // Empty groups belonging to someone else are not ours to remove.
                 before == handlers.len() || !handlers.is_empty()
             });
@@ -118,10 +214,7 @@ fn edited(mut value: Json, agent: &Agent, command: &str, install: bool) -> Json 
             }
         }
     }
-    if install {
-        let Integration::Hooks { events, .. } = agent.integration else {
-            unreachable!()
-        };
+    if !entries.is_empty() {
         if value.get("hooks").is_none() {
             value
                 .as_object_mut()
@@ -132,26 +225,26 @@ fn edited(mut value: Json, agent: &Agent, command: &str, install: bool) -> Json 
             .get_mut("hooks")
             .and_then(Json::as_object_mut)
             .expect("validated hooks");
-        for event in events {
+        for entry in entries {
             let position = hooks
                 .iter()
-                .rposition(|(name, _)| name == event.name)
+                .rposition(|(name, _)| name == entry.event)
                 .unwrap_or_else(|| {
-                    hooks.push((event.name.into(), Json::Array(Vec::new())));
+                    hooks.push((entry.event.into(), Json::Array(Vec::new())));
                     hooks.len() - 1
                 });
             hooks[position]
                 .1
                 .as_array_mut()
                 .expect("validated event")
-                .push(group(agent, event, command));
+                .push(entry.value);
         }
     }
     value
 }
 
 pub(super) fn update(
-    agent: &Agent,
+    agent: &impl HookAgent,
     path: &Path,
     command: &str,
     install: bool,
@@ -161,7 +254,16 @@ pub(super) fn update(
             return Ok(None);
         }
         let original = document(raw, path)?;
-        let replacement = edited(original.clone(), agent, command, install);
+        let entries = if install {
+            expected(agent, command)
+        } else {
+            Vec::new()
+        };
+        if install && reporting(&original, &entries, &|command| agent.owns(command)) == "installed"
+        {
+            return Ok(raw.map(str::to_owned));
+        }
+        let replacement = edited(original.clone(), entries, &|command| agent.owns(command));
         if original == replacement {
             return Ok(raw.map(str::to_owned));
         }
@@ -172,33 +274,16 @@ pub(super) fn update(
     })
 }
 
-pub(super) fn status(agent: &Agent, path: &Path, command: &str) -> Result<&'static str, String> {
+pub(super) fn status(
+    agent: &impl HookAgent,
+    path: &Path,
+    command: &str,
+) -> Result<&'static str, String> {
     let raw = storage::read(path)?;
     let original = document(raw.as_deref(), path)?;
-    let any = original
-        .get("hooks")
-        .and_then(Json::as_object)
-        .is_some_and(|hooks| {
-            effective_entries(hooks).any(|groups| {
-                groups
-                    .as_array()
-                    .expect("validated event")
-                    .iter()
-                    .any(|group| {
-                        group
-                            .get("hooks")
-                            .and_then(Json::as_array)
-                            .expect("validated group")
-                            .iter()
-                            .any(|handler| owned(handler, agent))
-                    })
-            })
-        });
-    Ok(if !any {
-        "not installed"
-    } else if original == edited(original.clone(), agent, command, true) {
-        "installed"
-    } else {
-        "partly installed"
-    })
+    Ok(reporting(
+        &original,
+        &expected(agent, command),
+        &|command| agent.owns(command),
+    ))
 }

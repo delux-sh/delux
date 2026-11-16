@@ -15,9 +15,14 @@ pub(super) enum Action {
 pub(super) fn mapping(agent: &str, event: &str, payload: &Value) -> Option<Action> {
     use Action::{Clear, Set};
     match (agent, event) {
-        ("claude" | "codex", "SessionStart" | "SessionEnd") | ("codex", "Interrupt") => Some(Clear),
+        ("claude" | "codex" | "gemini", "SessionStart" | "SessionEnd") | ("codex", "Interrupt") => {
+            Some(Clear)
+        }
         ("claude" | "codex", "UserPromptSubmit" | "PostToolUse")
         | ("claude", "PostToolUseFailure") => Some(Set("working")),
+        ("gemini", "BeforeAgent" | "AfterTool") => Some(Set("working")),
+        ("gemini", "Notification") => Some(Set("waiting")),
+        ("gemini", "AfterAgent") => Some(Set("done")),
         ("claude" | "codex", "PermissionRequest") | ("claude", "PreToolUse" | "Notification") => {
             Some(Set("waiting"))
         }
@@ -34,7 +39,16 @@ pub(super) fn mapping(agent: &str, event: &str, payload: &Value) -> Option<Actio
     }
 }
 
-fn action(args: &[&str], payload: &Value) -> Option<Action> {
+pub(super) fn action(args: &[&str], payload: &Value) -> Option<Action> {
+    let args = match args {
+        [rest @ .., "--agent", name]
+            if super::valid_name(name)
+                && matches!(rest.first().copied(), Some("set" | "clear")) =>
+        {
+            rest
+        }
+        _ => args,
+    };
     match args {
         ["set", "working"] => Some(Action::Set("working")),
         ["set", "waiting"] => Some(Action::Set("waiting")),

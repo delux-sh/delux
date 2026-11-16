@@ -5,6 +5,10 @@ use super::{AGENTS, Integration};
 
 pub(super) enum Directory {
     Home(&'static str),
+    Parent {
+        variable: &'static str,
+        suffix: &'static str,
+    },
     HomeVariable {
         variable: &'static str,
         default: &'static str,
@@ -30,6 +34,16 @@ impl Directory {
         };
         match self {
             Self::Home(path) => Ok(home()?.join(path)),
+            Self::Parent {
+                variable: name,
+                suffix,
+            } => {
+                let root = match variable(name).filter(|value| !value.is_empty()) {
+                    Some(root) => PathBuf::from(root),
+                    None => home()?,
+                };
+                Ok(root.join(suffix))
+            }
             Self::HomeVariable {
                 variable: name,
                 default,
@@ -59,6 +73,8 @@ pub(super) struct Context {
     pub directories: Vec<PathBuf>,
     pub path: OsString,
     pub executable: PathBuf,
+    pub home: Option<PathBuf>,
+    pub definitions_dir: PathBuf,
     fallback_parent_detection: Vec<bool>,
 }
 
@@ -67,6 +83,7 @@ impl Context {
         home: Option<OsString>,
         path: OsString,
         executable: PathBuf,
+        definitions_dir: PathBuf,
         variable: impl Fn(&str) -> Option<OsString>,
     ) -> Result<Self, String> {
         let mut directories = Vec::with_capacity(AGENTS.len());
@@ -86,16 +103,23 @@ impl Context {
             directories,
             path,
             executable,
+            home: home.map(PathBuf::from),
+            definitions_dir,
             fallback_parent_detection,
         })
     }
 
     pub fn environment() -> Result<Self, String> {
+        let config = PathBuf::from(crate::workers::default_config_path()?);
         Self::from_inputs(
             std::env::var_os("HOME"),
             std::env::var_os("PATH").unwrap_or_default(),
             std::env::current_exe()
                 .map_err(|error| format!("locate running executable: {error}"))?,
+            config
+                .parent()
+                .ok_or("default configuration has no directory")?
+                .join("agents"),
             |name| std::env::var_os(name),
         )
     }
@@ -121,7 +145,7 @@ impl Context {
     }
 }
 
-fn executable_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
+pub(super) fn executable_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
     std::env::split_paths(path)
         .map(|directory| directory.join(name))
         .find(|candidate| {

@@ -1,4 +1,7 @@
 #[cfg(test)]
+mod definition_tests;
+mod definitions;
+#[cfg(test)]
 mod extension_tests;
 mod json;
 mod paths;
@@ -41,6 +44,7 @@ enum Integration {
     Hooks {
         file: &'static str,
         events: &'static [Event],
+        timeout: u32,
     },
     Extension {
         file: &'static str,
@@ -69,6 +73,7 @@ const AGENTS: &[Agent] = &[
         detect_fallback_parent: false,
         integration: Integration::Hooks {
             file: "settings.json",
+            timeout: 5,
             events: &[
                 event("SessionStart"),
                 event("UserPromptSubmit"),
@@ -100,6 +105,7 @@ const AGENTS: &[Agent] = &[
         detect_fallback_parent: false,
         integration: Integration::Hooks {
             file: "hooks.json",
+            timeout: 5,
             events: &[
                 event("SessionStart"),
                 event("UserPromptSubmit"),
@@ -107,6 +113,32 @@ const AGENTS: &[Agent] = &[
                 event("PostToolUse"),
                 event("Stop"),
                 event("Interrupt"),
+                event("SessionEnd"),
+            ],
+        },
+    },
+    Agent {
+        name: "gemini",
+        display: "Gemini CLI",
+        executable: "gemini",
+        config_env: None,
+        directory: Directory::Parent {
+            variable: "GEMINI_CLI_HOME",
+            suffix: ".gemini",
+        },
+        detect_fallback_parent: false,
+        integration: Integration::Hooks {
+            file: "settings.json",
+            timeout: 5000,
+            events: &[
+                event("SessionStart"),
+                event("BeforeAgent"),
+                event("AfterTool"),
+                Event {
+                    name: "Notification",
+                    matcher: Some("ToolPermission"),
+                },
+                event("AfterAgent"),
                 event("SessionEnd"),
             ],
         },
@@ -161,33 +193,28 @@ pub(crate) fn validate(command: &str, args: &[&str]) -> Result<(), String> {
     if command == "agent-status" {
         return match args {
             ["set", "working" | "waiting" | "done"] | ["clear"] => Ok(()),
+            ["set", "working" | "waiting" | "done", "--agent", name]
+            | ["clear", "--agent", name] if valid_name(name) => Ok(()),
             ["hook", ..] => Ok(()),
-            _ => Err("usage: delux agent-status set <working|waiting|done> | clear | hook <agent> <event>".into()),
+            _ => Err("usage: delux agent-status set <working|waiting|done> [--agent NAME] | clear [--agent NAME] | hook <agent> <event>; NAME must match [a-z0-9][a-z0-9-]{0,31}".into()),
         };
     }
     match args {
         [] | ["status"] => Ok(()),
-        ["install" | "uninstall", names @ ..] => {
-            for name in names {
-                if !AGENTS.iter().any(|agent| agent.name == *name) {
-                    return Err(format!(
-                        "unknown agent {name}; valid names: {}",
-                        AGENTS
-                            .iter()
-                            .map(|agent| agent.name)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-            }
-            Ok(())
-        }
+        ["install" | "uninstall", ..] => Ok(()),
         _ => Err("usage: delux agents [status | install [NAME...] | uninstall [NAME...]]".into()),
     }
 }
 
+fn valid_name(name: &str) -> bool {
+    let valid = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    (1..=32).contains(&name.len())
+        && name.as_bytes().first().is_some_and(|byte| valid(*byte))
+        && name.bytes().all(|byte| valid(byte) || byte == b'-')
+}
+
 pub(crate) fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let result = Context::environment().and_then(|context| run_in(&context, args, out));
+    let result = Context::environment().and_then(|context| run_in(&context, args, out, err));
     finish(result, err)
 }
 
@@ -201,10 +228,44 @@ fn finish(result: Result<i32, String>, err: &mut dyn Write) -> i32 {
     }
 }
 
-fn run_in(context: &Context, args: &[String], out: &mut dyn Write) -> Result<i32, String> {
+fn run_in(
+    context: &Context,
+    args: &[String],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, String> {
     let operation = args.first().map_or("status", String::as_str);
     let command = context.command()?;
     let names = args.get(1..).unwrap_or_default();
+    let definitions = definitions::load(&context.definitions_dir, context.home.as_deref());
+    for (path, error) in &definitions.errors {
+        let _ = writeln!(
+            out,
+            "{} (invalid user-defined agent): {}",
+            display(&path.to_string_lossy(), 800),
+            display(error, 800)
+        );
+    }
+    if let Some(name) = names.iter().find(|name| {
+        !AGENTS.iter().any(|agent| agent.name == name.as_str())
+            && !definitions
+                .agents
+                .iter()
+                .any(|agent| agent.id == name.as_str())
+    }) {
+        let valid_names: Vec<_> = AGENTS
+            .iter()
+            .map(|agent| agent.name)
+            .chain(definitions.agents.iter().map(|agent| agent.id.as_str()))
+            .collect();
+        let _ = writeln!(
+            err,
+            "delux: unknown agent {}; valid names: {}",
+            display(name, 200),
+            valid_names.join(", ")
+        );
+        return Ok(2);
+    }
     let mut selected = 0;
     let mut changed_any = false;
     let mut errors = Vec::new();
@@ -336,7 +397,19 @@ fn run_in(context: &Context, args: &[String], out: &mut dyn Write) -> Result<i32
             errors.push(error);
         }
     }
-    if operation != "status" && selected == 0 && errors.is_empty() {
+    let users = definitions::run(
+        &definitions.agents,
+        context,
+        names,
+        operation,
+        &command,
+        out,
+    );
+    selected += users.selected;
+    changed_any |= users.changed;
+    errors.extend(users.errors);
+    if operation != "status" && selected == 0 && errors.is_empty() && definitions.errors.is_empty()
+    {
         let _ = writeln!(
             out,
             "{}",
@@ -356,7 +429,7 @@ fn run_in(context: &Context, args: &[String], out: &mut dyn Write) -> Result<i32
     if !errors.is_empty() {
         return Err(errors.join("\n"));
     }
-    Ok(0)
+    Ok(if definitions.errors.is_empty() { 0 } else { 1 })
 }
 
 fn reporting_status(agent: &Agent, path: &Path, command: &str) -> Result<&'static str, String> {

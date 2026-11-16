@@ -11,6 +11,7 @@ fn context(root: &TempDir) -> Context {
         Some(root.path().as_os_str().to_owned()),
         root.path().join("bin").into_os_string(),
         root.path().join("delux-dev"),
+        root.path().join("definitions"),
         |_| None,
     )
     .unwrap()
@@ -19,7 +20,7 @@ fn context(root: &TempDir) -> Context {
 fn invoke(context: &Context, args: &[&str]) -> Result<String, String> {
     let mut output = Vec::new();
     let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-    assert_eq!(run_in(context, &args, &mut output)?, 0);
+    assert_eq!(run_in(context, &args, &mut output, &mut Vec::new())?, 0);
     Ok(String::from_utf8(output).unwrap())
 }
 
@@ -48,6 +49,12 @@ fn event_mapping_table_and_background_tasks() {
         ("codex", "Stop", Set("done")),
         ("codex", "Interrupt", Clear),
         ("codex", "SessionEnd", Clear),
+        ("gemini", "SessionStart", Clear),
+        ("gemini", "BeforeAgent", Set("working")),
+        ("gemini", "AfterTool", Set("working")),
+        ("gemini", "Notification", Set("waiting")),
+        ("gemini", "AfterAgent", Set("done")),
+        ("gemini", "SessionEnd", Clear),
     ];
     for (agent, event, expected) in cases {
         assert_eq!(
@@ -136,7 +143,10 @@ fn reporter_bounds_payload_and_constructs_literal_tmux_arguments() {
 
 #[test]
 fn installs_missing_and_empty_documents_with_expected_handlers() {
-    for agent in &AGENTS[..2] {
+    for agent in AGENTS
+        .iter()
+        .filter(|agent| matches!(agent.integration, Integration::Hooks { .. }))
+    {
         for original in [None, Some("{}\n"), Some("{\"hooks\": {}}\n")] {
             let root = TempDir::new();
             let path = root.path().join("settings.json");
@@ -150,7 +160,10 @@ fn installs_missing_and_empty_documents_with_expected_handlers() {
                     .changed
             );
             let installed = json_file(&path);
-            let Integration::Hooks { events, .. } = agent.integration else {
+            let Integration::Hooks {
+                events, timeout, ..
+            } = agent.integration
+            else {
                 unreachable!()
             };
             assert_eq!(installed["hooks"].as_object().unwrap().len(), events.len());
@@ -164,7 +177,7 @@ fn installs_missing_and_empty_documents_with_expected_handlers() {
                 assert_eq!(
                     groups[0]["hooks"][0],
                     json!({
-                        "type": "command", "command": format!("delux agent-status hook {} {}", agent.name, event.name), "timeout": 5,
+                        "type": "command", "command": format!("delux agent-status hook {} {}", agent.name, event.name), "timeout": timeout,
                     })
                 );
             }
@@ -364,7 +377,10 @@ fn backups_are_created_once_modes_survive_and_links_are_preserved() {
 
 #[test]
 fn extensions_require_their_marker_and_report_updates() {
-    for agent in &AGENTS[2..] {
+    for agent in AGENTS
+        .iter()
+        .filter(|agent| matches!(agent.integration, Integration::Extension { .. }))
+    {
         let Integration::Extension { file, adapter } = agent.integration else {
             unreachable!()
         };
@@ -436,13 +452,13 @@ fn all_environment_paths_are_injected_including_omp_overrides() {
     assert_eq!(default.file(0), root.path().join(".claude/settings.json"));
     assert_eq!(default.file(1), root.path().join(".codex/hooks.json"));
     assert_eq!(
-        default.file(4),
+        default.file(5),
         root.path()
             .join(".omp/agent/extensions/delux-agent-status.ts")
     );
     fs::create_dir(root.path().join(".omp")).unwrap();
     assert!(
-        default.found(4),
+        default.found(5),
         "the fallback config root is enough to detect OMP"
     );
     let custom = |variables: &[(&str, &str)]| {
@@ -450,6 +466,7 @@ fn all_environment_paths_are_injected_including_omp_overrides() {
             Some(root.path().as_os_str().to_owned()),
             default.path.clone(),
             default.executable.clone(),
+            default.definitions_dir.clone(),
             |name| {
                 variables
                     .iter()
@@ -468,11 +485,11 @@ fn all_environment_paths_are_injected_including_omp_overrides() {
     assert_eq!(directories.file(0), Path::new("/fake/claude/settings.json"));
     assert_eq!(directories.file(1), Path::new("/fake/codex/hooks.json"));
     assert_eq!(
-        directories.file(4),
+        directories.file(5),
         Path::new("/fake/omp/extensions/delux-agent-status.ts")
     );
     assert_eq!(
-        custom(&[("PI_CONFIG_DIR", ".custom")]).file(4),
+        custom(&[("PI_CONFIG_DIR", ".custom")]).file(5),
         root.path()
             .join(".custom/agent/extensions/delux-agent-status.ts")
     );
@@ -563,7 +580,6 @@ fn argument_parsing_has_no_discovery_or_home_dependencies() {
     }
     for args in [
         vec!["agents", "status", "claude"],
-        vec!["agents", "install", "unknown"],
         vec!["agents", "unknown"],
         vec!["agent-status"],
         vec!["agent-status", "set", "bad"],
@@ -572,8 +588,8 @@ fn argument_parsing_has_no_discovery_or_home_dependencies() {
     ] {
         assert!(parse(&args).is_err(), "{args:?}");
     }
-    let error = parse(&["agents", "install", "unknown"]).unwrap_err();
-    assert!(error.contains("claude, codex, opencode, pi, omp"));
+    // Agent ids are resolved after loading the injected definition directory.
+    assert!(parse(&["agents", "install", "custom-tool"]).is_ok());
     for flags in [
         vec!["--host", "example"],
         vec!["--local"],

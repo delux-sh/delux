@@ -13,6 +13,7 @@ fn context(root: &TempDir, variables: &[(&str, &str)]) -> Context {
         Some(root.path().as_os_str().to_owned()),
         root.path().join("bin").into_os_string(),
         root.path().join("delux"),
+        root.path().join("definitions"),
         |name| {
             variables
                 .iter()
@@ -32,7 +33,7 @@ fn context(root: &TempDir, variables: &[(&str, &str)]) -> Context {
 fn invoke(context: &Context, args: &[&str]) -> String {
     let mut output = Vec::new();
     let args = args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>();
-    assert_eq!(run_in(context, &args, &mut output), Ok(0));
+    assert_eq!(run_in(context, &args, &mut output, &mut Vec::new()), Ok(0));
     String::from_utf8(output).unwrap()
 }
 
@@ -241,7 +242,7 @@ fn separate_extension_files_have_independent_lifecycles_and_no_shared_message() 
 fn extension_table_uses_the_packaged_adapter_sources_and_lists_all_names() {
     assert_eq!(
         AGENTS.iter().map(|agent| agent.name).collect::<Vec<_>>(),
-        ["claude", "codex", "opencode", "pi", "omp"]
+        ["claude", "codex", "gemini", "opencode", "pi", "omp"]
     );
     for (name, expected) in [
         (
@@ -272,6 +273,6 @@ fn extension_table_uses_the_packaged_adapter_sources_and_lists_all_names() {
     assert!(
         String::from_utf8(help)
             .unwrap()
-            .contains("claude|codex|opencode|pi|omp")
+            .contains("claude|codex|gemini|opencode|pi|omp")
     );
 }
