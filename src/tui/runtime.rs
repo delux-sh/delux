@@ -435,6 +435,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         save_mapping: Box::new(move |name, destination| {
             save_host_mapping(&config_path, name, destination)
         }),
+        add_computer_unavailable: super::add_computer_unavailable(opts),
         update_state: Box::new(move |change| match &state_path {
             Ok(path) => update_state(path, change),
             Err(error) => Err(error.clone()),

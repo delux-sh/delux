@@ -62,6 +62,7 @@ struct Services {
     resolve_user: ResolveUser,
     sharing_active: Box<dyn Fn(&str) -> bool>,
     save_mapping: SaveMapping,
+    add_computer_unavailable: Option<&'static str>,
     update_state: UpdateState,
     /// Unix seconds, for activity ages.
     now: Box<dyn Fn() -> i64>,
@@ -332,6 +333,8 @@ struct Picker {
     input: Option<UserInput>,
     creation: Option<SessionForm>,
     creation_pending: Option<Cancel>,
+    add_input: Option<String>,
+    select_added: Option<String>,
     rows: Vec<Row>,
     cursor: Option<usize>,
     list_state: ListState,
@@ -388,6 +391,8 @@ impl Picker {
             input: None,
             creation: None,
             creation_pending: None,
+            add_input: None,
+            select_added: None,
             rows: Vec::new(),
             cursor: None,
             list_state: ListState::default(),
@@ -511,6 +516,20 @@ impl Picker {
                             inventory: None,
                         }),
                 );
+                if let Some(destination) = self.select_added.take() {
+                    if let Some(entry) = self.entries.iter().find(|entry| {
+                        entry.worker.destination.as_deref() == Some(destination.as_str())
+                    }) {
+                        self.selection = Selection::Computer(entry.worker.key.clone());
+                        self.filter.clear();
+                        self.filtering = false;
+                    } else {
+                        self.notice = format!(
+                            "Saved {} in cli.json, but discovery excluded it; check configured ignore entries.",
+                            display(&destination, 200),
+                        );
+                    }
+                }
                 self.rebuild();
                 if workers.is_empty() {
                     self.scanning = false;
@@ -1165,6 +1184,20 @@ fn preview_refresh(local: bool, sharing: bool, succeeded: bool) -> Duration {
 
 fn most_recent(sessions: &[Session]) -> Option<&Session> {
     sessions.iter().max_by_key(|session| session.activity)
+}
+
+fn add_computer_unavailable(opts: &crate::options::Options) -> Option<&'static str> {
+    if opts.local_only {
+        Some(
+            "Cannot add a computer with --local: configured hosts are not scanned. Restart without --local.",
+        )
+    } else if !opts.hosts.is_empty() {
+        Some(
+            "Cannot add a computer with --host: only the requested hosts are scanned. Restart without --host.",
+        )
+    } else {
+        None
+    }
 }
 
 fn host_part(destination: &str) -> &str {

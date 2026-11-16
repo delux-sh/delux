@@ -70,6 +70,7 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | `f` | Pin a session |
 | `p` | Cycle the session tint |
 | `u` | Set the SSH user |
+| `a` | Add a computer by SSH destination or alias |
 | `r` | Rescan |
 | `q` | Quit |
 
@@ -80,6 +81,8 @@ The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab 
 Scroll with the pointer over the focused panel. Scrolling over an inactive preview or terminal shows a centered message in that panel: **Press Enter to attach** or **Press Tab to interact**. A keypress dismisses it; the message does not connect, change focus, or resize the terminal. For tmux scrollback, run `tmux set -g mouse on` on the session's computer, or use copy mode (usually Ctrl-B, then `[`). The list also supports wheel navigation.
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
+
+Press `a` in the list to add an SSH destination such as `alice@build-box` or an alias from `~/.ssh/config`. Enter saves it to `hosts` in the active `cli.json` (including a custom `--config` path), using the destination as both its name and value, just like `--host DEST`. Esc cancels. Delux rescans without reordering existing computers and selects the new computer; adding only probes in the background, never opens an interactive SSH connection. Duplicate names or destinations are rejected. This action is unavailable with `--local` or `--host`, which exclude other configured hosts; restart without those flags to add computers. `--no-local` still allows it.
 
 **New session:** press `n`, or Enter on a ready computer with no sessions. Choose a name, a directory (`~`, `~/path`, or an absolute path), and optionally a command such as `omp`, `claude`, or `codex`. Blank starts the normal shell; a command must be installed on that computer and may end the session when it exits. Tab changes fields; Enter creates and attaches; Esc, Ctrl-C, or Shift-Tab cancels. Sign in first if needed.
 

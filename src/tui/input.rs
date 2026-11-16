@@ -1,4 +1,4 @@
-//! Keyboard, mouse, paste, and right-panel form handling.
+//! Keyboard, mouse, paste, and computer/right-panel form handling.
 
 use std::io;
 
@@ -11,7 +11,7 @@ use crate::app::{Choice, Status};
 use crate::display::display;
 use crate::exit_codes;
 use crate::session_form::{FormAction, SessionForm};
-use crate::workers::with_user;
+use crate::workers::{validate_destination, with_user};
 
 impl Picker {
     pub(super) fn key(&mut self, key: KeyEvent) -> Option<Command> {
@@ -69,6 +69,9 @@ impl Picker {
         }
         if self.input.is_some() {
             return self.input_key(key);
+        }
+        if self.add_input.is_some() {
+            return self.add_input_key(key);
         }
         if self.filtering {
             match key.code {
@@ -139,6 +142,14 @@ impl Picker {
             KeyCode::Char('f') => self.toggle_pin(),
             KeyCode::Char('n') => self.start_creation(),
             KeyCode::Char('u') => return self.start_user_input(false),
+            KeyCode::Char('a') => {
+                if let Some(reason) = self.services.add_computer_unavailable {
+                    self.notice = reason.into();
+                } else {
+                    self.add_input = Some(String::new());
+                    self.notice.clear();
+                }
+            }
             KeyCode::Char('p') => {
                 self.tint = self.tint.next();
                 self.notice = format!("Selector tint: {}.", self.tint.label());
@@ -233,6 +244,7 @@ impl Picker {
             || self.active.is_none()
             || self.input.is_some()
             || self.creation.is_some()
+            || self.add_input.is_some()
             || self.filtering
             || !self
                 .terminal_area
@@ -265,6 +277,7 @@ impl Picker {
         } else if !self.terminal_focused
             && self.input.is_none()
             && self.creation.is_none()
+            && self.add_input.is_none()
             && self.list_area.contains((event.column, event.row).into())
         {
             match event.kind {
@@ -292,6 +305,7 @@ impl Picker {
         if self.terminal_focused
             || self.input.is_some()
             || self.creation.is_some()
+            || self.add_input.is_some()
             || self.filtering
         {
             return None;
@@ -337,10 +351,63 @@ impl Picker {
                     .filter(|ch| !ch.is_control())
                     .take(64usize.saturating_sub(input.text.chars().count())),
             );
+        } else if let Some(input) = &mut self.add_input {
+            input.extend(text.chars().filter(|ch| !ch.is_control()));
         } else if self.filtering {
             self.filter
                 .extend(text.chars().filter(|ch| !ch.is_control()));
             self.rebuild();
+        }
+        None
+    }
+
+    fn add_input_key(&mut self, key: KeyEvent) -> Option<Command> {
+        let text = self.add_input.as_mut()?;
+        match key.code {
+            KeyCode::Esc => {
+                self.add_input = None;
+                self.notice.clear();
+            }
+            KeyCode::Backspace => {
+                text.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
+            KeyCode::Enter => {
+                if let Err(error) = validate_destination(text) {
+                    self.notice = display(&error, 400);
+                    return None;
+                }
+                // "local" is reserved even when --no-local hides its row.
+                if text.as_str() == "local"
+                    || self.entries.iter().any(|entry| {
+                        entry.worker.name == *text
+                            || entry.worker.key == *text
+                            || entry.worker.destination.as_deref() == Some(text.as_str())
+                    })
+                {
+                    self.notice =
+                        "That computer name or SSH destination already exists; choose another."
+                            .into();
+                    return None;
+                }
+                // Like --host DEST, the destination itself is the computer's name.
+                if let Err(error) = (self.services.save_mapping)(text, text) {
+                    self.notice = format!("Could not save cli.json: {}", display(&error, 400));
+                    return None;
+                }
+                self.notice = format!("Saved {} in cli.json; rescanning.", display(text, 200));
+                self.select_added = self.add_input.take();
+                return Some(self.rescan(false));
+            }
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !ch.is_control() =>
+            {
+                text.push(ch);
+            }
+            _ => {}
         }
         None
     }
