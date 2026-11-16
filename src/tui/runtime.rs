@@ -237,6 +237,28 @@ fn execute_command(
                 });
             });
         }
+        Command::AgentStatuses {
+            generation,
+            cancel,
+            workers,
+        } => {
+            let refresh = picker.services.agent_status.clone();
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let mut results = Vec::with_capacity(workers.len());
+                for worker in workers {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    let result = refresh(&cancel, &worker);
+                    results.push((worker, result));
+                }
+                let _ = sender.send(Message::AgentStatuses {
+                    generation,
+                    results,
+                });
+            });
+        }
         Command::Preview {
             worker,
             session,
@@ -394,6 +416,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         }),
         scan: Arc::new(scan),
         preview: Arc::new(preview),
+        agent_status: Arc::new(crate::app::agent_status),
         resolve_user: Arc::new(crate::app::resolve_ssh_user),
         sharing_active: Box::new(crate::ssh_mux::sharing_active),
         save_mapping: Box::new(move |name, destination| {

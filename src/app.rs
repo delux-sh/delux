@@ -278,6 +278,25 @@ pub fn preview(
     }
 }
 
+/// Refresh agent status without prompting, within the preview command timeout.
+pub fn agent_status(
+    cancel: &Cancel,
+    worker: &Worker,
+) -> Result<Vec<crate::tmux::AgentStatusRow>, String> {
+    let result = run_computer_command(
+        cancel,
+        worker,
+        crate::tmux::STATUS_SCRIPT,
+        Duration::from_secs(5),
+        false,
+    )
+    .map_err(|err| err.to_string())?;
+    if result.code != 0 {
+        return Err(failure(result.code, &result.stderr).1);
+    }
+    crate::tmux::parse_status(&result.stdout)
+}
+
 pub fn scan(cancel: &Cancel, workers: Vec<Worker>) -> mpsc::Receiver<Inventory> {
     let (results_tx, results_rx) = mpsc::channel();
     let (jobs_tx, jobs_rx) = mpsc::channel::<Worker>();
@@ -499,10 +518,19 @@ fn show_inventory(out: &mut dyn Write, inventory: &Inventory, separate: bool) {
             windows_pad = widths[2] - row_widths[2],
         );
         let _ = match session.attached {
-            0 => writeln!(out, "detached"),
-            1 => writeln!(out, "1 client attached"),
-            count => writeln!(out, "{count} clients attached"),
+            0 => write!(out, "detached"),
+            1 => write!(out, "1 client attached"),
+            count => write!(out, "{count} clients attached"),
         };
+        if let Some(agent) = session.agent {
+            let state = match agent.state {
+                crate::tmux::AgentState::Working => "working",
+                crate::tmux::AgentState::Waiting => "waiting",
+                crate::tmux::AgentState::Done => "done",
+            };
+            let _ = write!(out, "  {state}");
+        }
+        let _ = writeln!(out);
     }
 }
 
@@ -739,6 +767,7 @@ mod tests {
             output: 1700000003,
             command: "sleep".into(),
             path: "/tmp/work".into(),
+            agent: None,
         }
     }
 
@@ -829,6 +858,40 @@ mod tests {
     }
 
     #[test]
+    fn inventory_json_includes_agent_status_shape() {
+        let mut inventory = Inventory {
+            worker: local_worker(),
+            sessions: vec![session(); 4],
+            status: Status::Ready,
+            detail: String::new(),
+        };
+        for (session, state) in inventory.sessions.iter_mut().skip(1).zip([
+            crate::tmux::AgentState::Working,
+            crate::tmux::AgentState::Waiting,
+            crate::tmux::AgentState::Done,
+        ]) {
+            session.agent = Some(crate::tmux::AgentStatus {
+                state,
+                since: Some(1700000004),
+            });
+        }
+        let value = serde_json::to_value(&inventory).unwrap();
+        assert!(value["sessions"][0]["agent"].is_null());
+        for (index, state) in ["working", "waiting", "done"].iter().enumerate() {
+            assert_eq!(
+                value["sessions"][index + 1]["agent"],
+                serde_json::json!({"state": state, "since": 1700000004}),
+            );
+        }
+        inventory.sessions[1].agent.as_mut().unwrap().since = None;
+        let value = serde_json::to_value(&inventory).unwrap();
+        assert_eq!(
+            value["sessions"][1]["agent"],
+            serde_json::json!({"state": "working", "since": null}),
+        );
+    }
+
+    #[test]
     fn human_inventory_uses_plain_rows_and_correct_counts() {
         let mut inventory = Inventory {
             worker: local_worker(),
@@ -875,6 +938,13 @@ mod tests {
         inventory.sessions[2].name = "e\u{301}".into();
         inventory.sessions[2].id = "$9".into();
         inventory.sessions[2].attached = 1;
+        for (session, state) in inventory.sessions.iter_mut().zip([
+            crate::tmux::AgentState::Working,
+            crate::tmux::AgentState::Waiting,
+            crate::tmux::AgentState::Done,
+        ]) {
+            session.agent = Some(crate::tmux::AgentStatus { state, since: None });
+        }
         let mut output = Vec::new();
         show_inventory(&mut output, &inventory, false);
         inventory.worker.name = "other computer".into();
@@ -885,9 +955,9 @@ mod tests {
             output,
             concat!(
                 "local\n",
-                "  a b   $7    1 window,   detached\n",
-                "  東京  $123  12 windows, 2 clients attached\n",
-                "  e\u{301}     $9    1 window,   1 client attached\n",
+                "  a b   $7    1 window,   detached  working\n",
+                "  東京  $123  12 windows, 2 clients attached  waiting\n",
+                "  e\u{301}     $9    1 window,   1 client attached  done\n",
                 "\nother computer\n",
                 "  No tmux sessions\n",
             )
@@ -1136,6 +1206,89 @@ mod tests {
     }
 
     #[test]
+    fn agent_status_remote_is_noninteractive_and_maps_results() {
+        let _env = env_write();
+        let root = TempDir::new();
+        let ssh = root.path().join("ssh");
+        fs::write(
+            &ssh,
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$DELUX_TEST_ARGS"
+[ "$SSH_ASKPASS_REQUIRE" = never ] || exit 99
+if IFS= read -r input; then exit 99; fi
+printf '%s' "$DELUX_TEST_OUTPUT"
+printf '%s' "$DELUX_TEST_ERROR" >&2
+exit "$DELUX_TEST_CODE"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        let arguments = root.path().join("arguments");
+        let _path = EnvVar::set("PATH", root.path());
+        let _arguments = EnvVar::set("DELUX_TEST_ARGS", &arguments);
+        let worker = Worker {
+            key: "remote:host".into(),
+            name: "host".into(),
+            destination: Some("user@host".into()),
+            online: Some(true),
+        };
+        let _code = EnvVar::set("DELUX_TEST_CODE", "0");
+        let _error = EnvVar::set("DELUX_TEST_ERROR", "");
+        let _output = EnvVar::set(
+            "DELUX_TEST_OUTPUT",
+            "DELUX_STATUS_1\n1234 1700000000 $7 waiting 1700000004\nDELUX_END\n",
+        );
+        let rows = agent_status(&Cancel::new(), &worker).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].server_pid, 1234);
+        assert_eq!(rows[0].server_start, 1700000000);
+        assert_eq!(rows[0].session_id, "$7");
+        assert_eq!(
+            rows[0].agent,
+            Some(crate::tmux::AgentStatus {
+                state: crate::tmux::AgentState::Waiting,
+                since: Some(1700000004),
+            }),
+        );
+        let arguments = fs::read_to_string(arguments).unwrap();
+        assert!(arguments.starts_with("-T\n"), "{arguments}");
+        for option in [
+            "BatchMode=yes",
+            "StrictHostKeyChecking=yes",
+            "ClearAllForwardings=yes",
+            "ForwardAgent=no",
+            "ForwardX11=no",
+        ] {
+            assert!(arguments.contains(&format!("\n{option}\n")), "{arguments}");
+        }
+        assert!(
+            arguments.contains(&shell_quote(crate::tmux::STATUS_SCRIPT)),
+            "{arguments}",
+        );
+        for (code, stderr) in [
+            (MISSING_TMUX, ""),
+            (MISSING_TOOLS, ""),
+            (PROBE_FAILED, ""),
+            (UNSUPPORTED_TMUX, "Upgrade tmux"),
+            (255, "Permission denied"),
+        ] {
+            let _code = EnvVar::set("DELUX_TEST_CODE", code.to_string());
+            let _error = EnvVar::set("DELUX_TEST_ERROR", stderr);
+            assert_eq!(
+                agent_status(&Cancel::new(), &worker).unwrap_err(),
+                failure(code, stderr).1,
+            );
+        }
+        let _output = EnvVar::set("DELUX_TEST_OUTPUT", "not a status frame");
+        assert!(agent_status(&Cancel::new(), &worker).is_err());
+        let _output = EnvVar::set("DELUX_TEST_OUTPUT", "DELUX_STATUS_1\nDELUX_END\n");
+        assert!(agent_status(&Cancel::new(), &worker).unwrap().is_empty());
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert!(agent_status(&cancel, &worker).is_err());
+    }
+
+    #[test]
     fn preview_remote_is_noninteractive_and_maps_results() {
         let _env = env_write();
         let root = TempDir::new();
@@ -1247,6 +1400,10 @@ exit "$DELUX_TEST_CODE"
         assert_eq!(
             preview(&Cancel::new(), &local_worker(), &session()),
             Err(failure(MISSING_TMUX, "")),
+        );
+        assert_eq!(
+            agent_status(&Cancel::new(), &local_worker()).unwrap_err(),
+            failure(MISSING_TMUX, "").1,
         );
         let tmux = root.path().join("tmux");
         fs::write(

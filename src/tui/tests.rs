@@ -44,6 +44,7 @@ fn session(id: &str, name: &str) -> Session {
         output: 1,
         command: String::new(),
         path: String::new(),
+        agent: None,
     }
 }
 
@@ -72,6 +73,7 @@ struct Effects {
     mappings: Vec<(String, String)>,
     states: Vec<State>,
     previews: Vec<PreviewKey>,
+    status_refreshes: Vec<String>,
 }
 
 struct Harness {
@@ -115,6 +117,7 @@ impl Harness {
                     output: session.output,
                 })
             }),
+            agent_status: Arc::new(|_, _| Ok(Vec::new())),
             resolve_user: Arc::new(|_, _| Err("SSH settings unavailable".into())),
             sharing_active: Box::new(|_| true),
             save_mapping: Box::new(move |name, destination| {
@@ -164,6 +167,27 @@ impl Harness {
                 self.picker.update(Message::Inventory {
                     generation,
                     inventory: None,
+                })
+            }
+            Command::AgentStatuses {
+                generation,
+                cancel,
+                workers,
+            } => {
+                let results = workers
+                    .into_iter()
+                    .map(|worker| {
+                        self.effects
+                            .borrow_mut()
+                            .status_refreshes
+                            .push(worker.key.clone());
+                        let result = (self.picker.services.agent_status)(&cancel, &worker);
+                        (worker, result)
+                    })
+                    .collect();
+                self.picker.update(Message::AgentStatuses {
+                    generation,
+                    results,
                 })
             }
             Command::Preview {
@@ -1876,7 +1900,7 @@ fn pinned_rows_keep_their_computer_visible_in_the_sidebar() {
     for (line, host) in pinned.iter().zip(["studio", "laptop", "laptop"]) {
         assert!(line.ends_with(host), "{host}: {sidebar:#?}");
     }
-    assert!(pinned[2].contains("a-really-lo") && pinned[2].contains('…'));
+    assert!(pinned[2].contains("a-really-l") && pinned[2].contains('…'));
 }
 
 #[test]
@@ -2195,4 +2219,315 @@ fn wheel_requires_visible_active_terminal_without_dialogs() {
     assert!(harness.picker.terminal_mouse_event(event).is_none());
     assert!(harness.picker.update(Message::Mouse(event)).is_none());
     assert!(harness.picker.notice.is_empty());
+}
+
+fn with_agent(mut session: Session, state: AgentState, since: Option<i64>) -> Session {
+    session.agent = Some(crate::tmux::AgentStatus { state, since });
+    session
+}
+
+#[test]
+fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
+    let computer = worker("box", "box");
+    let sessions = vec![
+        with_agent(
+            session("$1", "waiting"),
+            AgentState::Waiting,
+            Some(NOW - 180),
+        ),
+        with_agent(session("$2", "working"), AgentState::Working, Some(NOW)),
+        with_agent(session("$3", "done"), AgentState::Done, Some(NOW - 7200)),
+        session("$4", "quiet"),
+    ];
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, sessions)]);
+    for width in [70, 120] {
+        let buffer = harness.buffer(width, 30);
+        let lines: Vec<String> = (0..30)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        assert!(lines[0].contains(" · 1 waiting"));
+        let mut name_columns = Vec::new();
+        let mut age_columns = Vec::new();
+        for (name, marker, style) in [
+            (
+                "waiting",
+                "●",
+                theme::warning().add_modifier(Modifier::BOLD),
+            ),
+            ("working", "●", harness.picker.tint.secondary()),
+            ("done", "✓", theme::success()),
+            ("quiet", " ", harness.picker.tint.secondary()),
+        ] {
+            let y = lines
+                .iter()
+                .position(|line| line.contains(name) && line.contains("11d"))
+                .unwrap();
+            let cells: Vec<_> = (0..width).map(|x| buffer[(x, y as u16)].symbol()).collect();
+            let x = cells
+                .windows(name.len())
+                .position(|cells| cells.concat() == name)
+                .unwrap();
+            name_columns.push(x);
+            age_columns.push(
+                cells
+                    .windows(3)
+                    .position(|cells| cells.concat() == "11d")
+                    .unwrap(),
+            );
+            let marker_cell = &buffer[((x - 3) as u16, y as u16)];
+            assert_eq!(marker_cell.symbol(), marker);
+            assert_eq!(marker_cell.fg, style.fg.unwrap());
+            if name == "waiting" {
+                assert!(marker_cell.modifier.contains(Modifier::BOLD));
+            }
+        }
+        assert!(name_columns.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(age_columns.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+    let start = Instant::now();
+    harness.tick(start);
+    harness.tick(start + PREVIEW_DEBOUNCE);
+    assert!(
+        harness
+            .picker
+            .screen()
+            .detail
+            .starts_with("agent waiting 3m")
+    );
+    harness.press(&["down"]);
+    assert!(
+        harness
+            .picker
+            .screen()
+            .detail
+            .starts_with("agent working now")
+    );
+    harness.press(&["down"]);
+    assert!(harness.picker.screen().detail.starts_with("agent done 2h"));
+    harness.picker.terminal_focused = true;
+    let buffer = harness.buffer(120, 30);
+    for (state, expected) in [
+        (AgentState::Waiting, theme::warning()),
+        (AgentState::Working, theme::inactive_sidebar()),
+        (AgentState::Done, theme::inactive_sidebar()),
+    ] {
+        let index = harness
+            .picker
+            .rows
+            .iter()
+            .position(|row| {
+                harness
+                    .picker
+                    .session(*row)
+                    .is_some_and(|session| session.agent.is_some_and(|agent| agent.state == state))
+            })
+            .unwrap();
+        let cell = &buffer[(
+            harness.picker.list_area.x + 2,
+            harness.picker.list_area.y + index as u16,
+        )];
+        assert_eq!(cell.fg, expected.fg.unwrap());
+    }
+}
+
+#[test]
+fn working_marker_expires_only_without_recent_status_or_output() {
+    let computer = worker("box", "box");
+    for (state, since, output, visible) in [
+        (AgentState::Working, None, NOW - 601, false),
+        (AgentState::Working, None, NOW - 600, true),
+        (AgentState::Working, Some(NOW - 601), NOW - 601, false),
+        (AgentState::Working, Some(NOW - 600), 1, true),
+        (AgentState::Working, Some(1), NOW, true),
+        (AgentState::Waiting, Some(1), 1, true),
+        (AgentState::Done, None, 1, true),
+    ] {
+        let mut session = with_agent(session("$1", "work"), state, since);
+        session.output = output;
+        let mut harness = Harness::new(
+            vec![computer.clone()],
+            vec![ready(&computer, vec![session])],
+        );
+        let view = harness.rendered(70, 20);
+        assert_eq!(
+            view.contains(if state == AgentState::Done {
+                "✓"
+            } else {
+                "●"
+            }),
+            visible
+        );
+        let start = Instant::now();
+        harness.tick(start);
+        harness.tick(start + PREVIEW_DEBOUNCE);
+        assert_eq!(
+            harness.picker.screen().detail.starts_with("agent "),
+            visible
+        );
+    }
+}
+
+#[test]
+fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_preview() {
+    let computer = worker("box", "box");
+    let mut first = session("$1", "first");
+    first.activity = NOW;
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![first, session("$2", "second")])],
+    );
+    harness.picker.services.agent_status = Arc::new(|_, _| {
+        Ok(vec![AgentStatusRow {
+            server_pid: 1,
+            server_start: 1,
+            session_id: "$2".into(),
+            agent: Some(crate::tmux::AgentStatus {
+                state: AgentState::Waiting,
+                since: None,
+            }),
+        }])
+    });
+    harness.rendered(120, 30);
+    let start = Instant::now();
+    harness.tick(start);
+    harness.tick(start + PREVIEW_DEBOUNCE);
+    let selection = harness.picker.selection.clone();
+    harness.picker.notice = "keep this notice".into();
+    // The selection's due preview goes first; the status refresh takes the
+    // next tick and leaves previews alone.
+    harness.tick(start + STATUS_REFRESH);
+    assert!(harness.effects.borrow().status_refreshes.is_empty());
+    let previews = harness.effects.borrow().previews.clone();
+    harness.tick(start + STATUS_REFRESH + Duration::from_millis(16));
+    assert_eq!(harness.effects.borrow().status_refreshes, ["box"]);
+    assert_eq!(harness.effects.borrow().previews, previews);
+    assert_eq!(harness.picker.selection, selection);
+    assert_eq!(harness.picker.notice, "keep this notice");
+    let sessions = harness.picker.entries[0].sessions();
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["$1", "$2"]
+    );
+    assert_eq!(sessions[1].agent.unwrap().state, AgentState::Waiting);
+    let view = harness.rendered(120, 30);
+    assert!(view.contains("●  second"));
+    assert!(view.contains("1 waiting"));
+}
+
+#[test]
+fn agent_refresh_ignores_old_generation_other_server_and_failures() {
+    let computer = worker("box", "box");
+    let original = with_agent(session("$1", "work"), AgentState::Done, None);
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![original.clone()])],
+    );
+    let generation = harness.picker.generation;
+    for (generation, pid, start) in [
+        (generation - 1, 1, 1),
+        (generation, 2, 1),
+        (generation, 1, 2),
+    ] {
+        harness.picker.update(Message::AgentStatuses {
+            generation,
+            results: vec![(
+                computer.clone(),
+                Ok(vec![AgentStatusRow {
+                    server_pid: pid,
+                    server_start: start,
+                    session_id: "$1".into(),
+                    agent: Some(crate::tmux::AgentStatus {
+                        state: AgentState::Waiting,
+                        since: None,
+                    }),
+                }]),
+            )],
+        });
+        assert_eq!(
+            harness.picker.entries[0].sessions(),
+            std::slice::from_ref(&original)
+        );
+    }
+    harness.picker.update(Message::AgentStatuses {
+        generation,
+        results: vec![(computer, Err("untrusted failure".into()))],
+    });
+    assert_eq!(harness.picker.entries[0].sessions(), &[original]);
+    assert!(harness.picker.notice.is_empty());
+}
+
+#[test]
+fn agent_refresh_requires_ready_sessions_and_shared_remote_connection() {
+    let local = worker("local", "local");
+    let shared = remote("shared", "shared", "shared.example");
+    let unshared = remote("unshared", "unshared", "unshared.example");
+    let empty = worker("empty", "empty");
+    let failed = worker("failed", "failed");
+    let mut harness = Harness::new(
+        vec![
+            local.clone(),
+            shared.clone(),
+            unshared.clone(),
+            empty.clone(),
+            failed.clone(),
+        ],
+        vec![
+            ready(&local, vec![session("$1", "local")]),
+            ready(&shared, vec![session("$1", "shared")]),
+            ready(&unshared, vec![session("$1", "unshared")]),
+            ready(&empty, vec![]),
+            self::failed(&failed, Status::ProbeFailed, "failed"),
+        ],
+    );
+    harness.picker.services.sharing_active =
+        Box::new(|destination| destination == "shared.example");
+    let start = Instant::now();
+    harness.tick(start);
+    assert!(harness.effects.borrow().status_refreshes.is_empty());
+    let command = harness.picker.update(Message::Tick(start + STATUS_REFRESH));
+    assert!(matches!(command, Some(Command::AgentStatuses { .. })));
+    assert!(
+        harness
+            .picker
+            .update(Message::Tick(start + STATUS_REFRESH * 2))
+            .is_none()
+    );
+    harness.drive(command);
+    assert_eq!(
+        harness.effects.borrow().status_refreshes,
+        ["local", "shared"]
+    );
+    harness.picker.scanning = true;
+    harness.tick(start + STATUS_REFRESH * 3);
+    assert_eq!(harness.effects.borrow().status_refreshes.len(), 2);
+    harness.picker.scanning = false;
+    harness.picker.quit();
+    harness.tick(start + STATUS_REFRESH * 4);
+    assert_eq!(harness.effects.borrow().status_refreshes.len(), 2);
+}
+
+#[test]
+fn waiting_sessions_move_first_only_on_reordering_scan() {
+    let computer = worker("box", "box");
+    let mut newest = session("$1", "newest");
+    newest.activity = NOW;
+    let older = with_agent(session("$2", "older"), AgentState::Waiting, None);
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![newest.clone(), older.clone()])],
+    );
+    assert_eq!(harness.picker.entries[0].sessions()[0].id, "$2");
+    let newest = with_agent(newest, AgentState::Waiting, None);
+    let mut older = older;
+    older.agent = None;
+    harness.picker.entries[0]
+        .update_inventory(ready(&computer, vec![newest.clone(), older.clone()]), false);
+    harness.picker.rebuild();
+    assert_eq!(harness.picker.entries[0].sessions()[0].id, "$2");
+    harness.picker.entries[0].update_inventory(ready(&computer, vec![older, newest]), true);
+    harness.picker.rebuild();
+    assert_eq!(harness.picker.entries[0].sessions()[0].id, "$1");
 }

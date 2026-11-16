@@ -80,11 +80,21 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
 
+### Agent status
+
+Agents can report a per-pane status through tmux, for example:
+
+```sh
+tmux set -p @agent_status waiting
+```
+
+The fixed states are `working`, `waiting`, and `done`, optionally followed by a Unix timestamp in seconds (for example, `working 1794700000`). Delux shows status in the picker and `delux list`; JSON sessions include `agent` as `null` or an object with `state` and optional timestamp `since` (`null` when absent). A `working` status becomes stale after ten minutes without a newer status or pane output. Integration adapters belong in `adapters/`; no adapter is required to set the option manually.
+
 ### A few boundaries
 
 Delux finds **existing sessions on the default tmux server**. It doesn't create sessions or discover custom `tmux -L` / `-S` servers.
 
-Session ages show when output last changed, not whether a program is busy or finished.
+Session ages show when output last changed; explicit agent status separately reports whether an agent is working, waiting, or done.
 
 The embedded terminal supports keyboard input and mouse-wheel scrolling, but not mouse clicks/dragging, terminal graphics, or advanced keyboard protocols. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
 

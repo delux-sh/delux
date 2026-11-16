@@ -28,6 +28,8 @@ Delux validates SSH destinations, quotes session identifiers in commands, and ch
 
 Picker previews use read-only `tmux capture-pane`. Both previews and the embedded terminal render parsed output rather than passing escape sequences directly to your terminal. Remote clipboard, window-title, and window-resize requests are ignored. The full-terminal `delux attach` command passes normal tmux output through to your terminal instead.
 
+Agent status is untrusted pane metadata: Delux accepts only the fixed states `working`, `waiting`, and `done` with an optional Unix timestamp. Raw status text is never rendered or executed.
+
 ## Discovery and local data
 
 ### Which computers are contacted
@@ -42,7 +44,7 @@ For untagged, unshared peers with known matching ownership, host mappings are ma
 
 Configuration defaults to `~/.config/delux/cli.json`, including on macOS. Pins live in `~/.local/state/delux/state.json`; legacy recent-attachment entries are preserved but no longer recorded or displayed. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override those base directories; `--config PATH` overrides the configuration file. Relative or empty XDG directory values are ignored, and non-UTF-8 directory roots are rejected.
 
-These files contain computer mappings and session preferences, not passwords, private keys, or captured terminal output. Previews stay in memory, and inventories refresh on rescan.
+These files contain computer mappings and session preferences, not passwords, private keys, or captured terminal output. Previews stay in memory; inventories refresh on rescan, while agent status refreshes independently.
 
 Updates are merged under persistent `.lock` files beside the resolved target files. Do not remove those locks while Delux is running. Existing symlinks are preserved; dangling links are rejected. Each configuration or state file is limited to 64 KiB, and oversized updates are rejected without replacing it.
 
