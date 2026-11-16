@@ -301,6 +301,19 @@ fn execute_command(
                 }
             });
         }
+        Command::Create {
+            worker,
+            request,
+            cancel,
+        } => {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let result = crate::app::create_session(&cancel, &worker, &request);
+                // Even cancelled requests must settle: their remote mutation
+                // may have completed before SSH was interrupted.
+                let _ = sender.send(Message::Created { worker, result });
+            });
+        }
         Command::Launch(choice) => {
             if let Some(session) = &choice.session {
                 // Nesting the local session containing Delux would display itself.

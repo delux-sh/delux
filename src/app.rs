@@ -17,8 +17,8 @@ use crate::options::{Options, parse_options, print_help};
 use crate::process::{CommandError, CommandResult, run_command};
 use crate::terminal::{is_terminal, restore_terminal, terminal_state};
 use crate::tmux::{
-    INVENTORY_SCRIPT, Session, attach_script, parse_inventory, parse_preview, preview_script,
-    shell_quote, switch_script,
+    INVENTORY_SCRIPT, NewSession, Session, attach_script, create_script, parse_created_session,
+    parse_inventory, parse_preview, preview_script, shell_quote, switch_script,
 };
 use crate::workers::{Config, Worker, discover, explicit_worker, load_config};
 
@@ -257,6 +257,35 @@ pub fn probe(cancel: &Cancel, worker: &Worker, interactive: bool) -> Inventory {
         },
     }
     inventory
+}
+
+/// Create exactly once, without authentication prompts or retries after uncertainty.
+/// The returned inventory is from the same verification as the captured identity.
+pub fn create_session(
+    cancel: &Cancel,
+    worker: &Worker,
+    request: &NewSession,
+) -> Result<(Session, Vec<Session>), (Status, String)> {
+    let script = create_script(request).map_err(|error| (Status::ProbeFailed, error))?;
+    let uncertain = |(status, detail): (Status, String)| {
+        (
+            status,
+            format!(
+                "{}. Rescan before retrying: the session may have been created.",
+                detail.trim_end_matches('.')
+            ),
+        )
+    };
+    let result = run_computer_command(cancel, worker, &script, Duration::from_secs(12), false)
+        .map_err(|error| uncertain((Status::ProbeFailed, error.to_string())))?;
+    if result.code != 0 {
+        let error = failure(result.code, &result.stderr);
+        return Err(match result.code {
+            MISSING_TMUX | UNSUPPORTED_TMUX | MISSING_TOOLS => error,
+            _ => uncertain(error),
+        });
+    }
+    parse_created_session(&result.stdout).map_err(|error| uncertain((Status::ProbeFailed, error)))
 }
 
 /// Capture a preview within five seconds, plus bounded SSH master reset on timeout.

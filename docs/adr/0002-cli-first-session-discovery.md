@@ -39,6 +39,7 @@ The first implementation targets Linux and macOS clients and workers. The SSH ba
 - Plain local tmux or SSH/tmux attachment is the portable baseline. Detaching or closing the client must leave the remote session running, without forcibly detaching other clients.
 - Resume means reattach to a surviving session. It does not mean process recovery after worker reboot, conversation reconstruction, or migration between machines.
 - No agent plugin is required. OMP, other coding agents, editors, shells, and long-running commands remain ordinary terminal workloads. Do not infer semantic agent status from terminal text.
+- Explicit creation is a separate action: collect name, directory, and optional shell command, create once, capture the new session's lifetime identity, and attach only after verification. Preserve the previous client on failure/cancellation. Never use create-or-attach as recovery for an absent target, and never retry an uncertain remote mutation automatically.
 
 ### Optional Mosh
 
@@ -86,7 +87,7 @@ Before shipping optional Mosh support, exercise network interruption and recover
 
 ## Deferred work and non-goals
 
-- Session creation can follow attachment to remove the remaining need to start tmux manually; it is not part of the first milestone.
+- Session creation followed the original attachment milestone: the picker now creates local/remote sessions explicitly, using the existing SSH and tmux tools. Project presets, directory browsing, and structured agent integrations remain separate work.
 - Native mobile clients, graphical dashboards, agent-state interpretation, background monitoring, notifications, scheduling, and cloud provisioning are deferred.
 - Adopting arbitrary running terminal processes, custom tmux socket discovery, reboot recovery, and cross-machine session migration are outside the initial scope.
 - No T3 provider adapter or partnership is required. T3's authenticated MCP interface is a possible future integration for T3-managed threads, not a tmux attachment protocol.

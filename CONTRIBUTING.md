@@ -1,6 +1,6 @@
 # Contributing to Delux
 
-Thanks for helping. Delux does one thing: it finds existing tmux sessions across your computers and attaches to one over SSH in the terminal you already use. Changes that keep it small, predictable, and safe are the easiest to accept.
+Thanks for helping. Delux finds, creates, and attaches to tmux sessions across your computers through SSH in the terminal you already use. Changes that keep it small, predictable, and safe are the easiest to accept.
 
 ## Before you start
 

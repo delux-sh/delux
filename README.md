@@ -2,13 +2,13 @@
 
 **Your tmux sessions, across your computers.**
 
-tmux keeps your work running. Delux helps you find it again: browse local and remote sessions in one list, preview what's on screen, and open a session in the right-hand panel. Switch back to the list without disconnecting.
+tmux keeps your work running. Delux helps you find it again: browse local and remote sessions in one list, preview what's on screen, and open or create a session in the right-hand panel. Switch back to the list without disconnecting.
 
 ![Delux browsing three computers' tmux sessions, opening one in the right-hand panel, and pinning another](docs/demo.gif)
 
 *Recorded in a demo environment with synthetic computers and sessions.*
 
-Delux uses SSH and your existing tmux sessions. It can find computers through [Tailscale](https://tailscale.com), or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
+Delux uses SSH and tmux. It can find computers through [Tailscale](https://tailscale.com), or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
 
 ## Why I built this
 
@@ -62,9 +62,10 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | Key | Action |
 | --- | --- |
 | ↑ / ↓ or `j` / `k` | Move |
-| `enter` | Open a session, or sign in to a computer |
+| `enter` | Open a session, sign in, or create on an empty ready computer |
 | `tab` | Focus the connected terminal; open the selected session if none is connected |
 | `shift-tab` | Return to the list without disconnecting |
+| `n` | Create a session on the selected computer |
 | `/` | Filter computers and sessions |
 | `f` | Pin a session |
 | `p` | Cycle the session tint |
@@ -79,6 +80,8 @@ The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab 
 Scroll with the pointer over the focused panel. Scrolling over an inactive preview or terminal shows a centered message in that panel: **Press Enter to attach** or **Press Tab to interact**. A keypress dismisses it; the message does not connect, change focus, or resize the terminal. For tmux scrollback, run `tmux set -g mouse on` on the session's computer, or use copy mode (usually Ctrl-B, then `[`). The list also supports wheel navigation.
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
+
+**New session:** press `n`, or Enter on a ready computer with no sessions. Choose a name, a directory (`~`, `~/path`, or an absolute path), and optionally a command such as `omp`, `claude`, or `codex`. Blank starts the normal shell; a command must be installed on that computer and may end the session when it exits. Tab changes fields; Enter creates and attaches; Esc, Ctrl-C, or Shift-Tab cancels. Sign in first if needed.
 
 ### Agent status
 
@@ -101,7 +104,7 @@ The states shown are `working`, `waiting`, `done`, and `error` (failed and stopp
 
 ### A few boundaries
 
-Delux finds **existing sessions on the default tmux server**. It doesn't create sessions or discover custom `tmux -L` / `-S` servers.
+Delux uses the **default tmux server**, not custom `tmux -L` / `-S` servers. Creation is explicit and never replaces an existing session. After a timeout or cancellation, Delux rescans without retrying creation: the session may already exist.
 
 Session ages show when output last changed; explicit agent status separately reports whether an agent is working, waiting, done, or stopped with an error.
 

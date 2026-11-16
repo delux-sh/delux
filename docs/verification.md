@@ -1,5 +1,23 @@
 # Verification record
 
+## Explicit session creation
+
+Pre-merge November 16: rebased onto agent-status integration `a741d9d`. Clippy, Rust 1.88 all-target checking and the release build passed. The suite passed 255 tests; one new regression assumed discovery order instead of selecting the target by key. After correcting that assumption, the regression passed. Full CI remains the merge gate.
+
+Real-PTY checks observed local creation, chosen directory, command execution, terminal input, and duplicate rejection. The loopback-SSH fixture additionally completed cancel/quit and verified both sessions survived. Fixtures used temporary keys, configuration and tmux sockets; real sessions and SSH settings were untouched. Earlier delayed-response cancellation checks below remain historical; current model regressions cover cancellation and stale scan results.
+
+The remaining historical results in this section cover feature commit `f0ef8e6` on old base `081568b`, before the 0.1.0 release.
+
+The picker creates sessions on a ready local or SSH computer using a name, target directory, and optional shell command. Creation captures the new session's lifetime identity before attachment, rejects duplicate names, and never retries an uncertain mutation. The previous client remains connected while the form is open and after failed or cancelled creation.
+
+Pre-merge review keeps encoding-tool checks in a subshell so their diagnostic `LC_ALL=C` cannot become the new tmux server's locale. Creation submission waits for an ongoing scan, including the uncertainty rescan after failure; successful creation ignores older in-flight inventory for that computer while other computers finish refreshing. These regressions passed in the checks above.
+
+The macOS ARM64 full suite passed: 184 tests, with one subprocess helper ignored in the ordinary run and exercised by its parent. Formatting, Clippy with warnings denied, Rust 1.88 all-target checks, and the release build passed. Five focused creation regressions also passed after final text updates. Tests cover literal shell/tmux metacharacters, duplicate and invalid-directory non-mutation, starting a missing server, target HOME expansion, replacement identity rejection, bounded form input, cancelled completion, and changed computer configuration.
+
+Real-PTY checks exercised the release picker locally and through an isolated loopback OpenSSH server with temporary keys/configuration. Verified chosen working directories, terminal input, duplicate rejection, invalid-directory recovery without starting a server, OMP launch, retained existing sessions, detach/reattach, and session survival after quitting Delux. Side-by-side, stacked, and compact form layouts were observed. Delaying the SSH response after a real creation committed verified that cancellation neither attached nor retried, retained the original client, and allowed the created session to be found after clearing the existing filter.
+
+All fixture servers, agent sessions, keys, and temporary files were removed. This worktree has not run Linux CI or exercised creation on a physical Linux host; OMP startup was checked without submitting a model request. Claude/Codex launch and remote network failure conditions beyond the injected response delay were not separately exercised.
+
 ## 0.1.0 release rehearsal (November 15, 2026)
 
 A [nonpublishing Release run](https://github.com/delux-sh/delux/actions/runs/43764792273) passed at `f2817a9`, the last commit before the published-installation wording. It ran Linux and macOS CI and the minimum Rust version check, built all four GPL archives, and installed the generated formula with full dependencies on native macOS Apple Silicon and Intel and native Linux ARM64 and x86_64 runners. Each passed `brew test`, `brew audit --strict`, a byte comparison against its archive, and the real-PTY picker smoke check. The publish job was skipped.
