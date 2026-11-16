@@ -1,7 +1,8 @@
+// delux-agent-status adapter. Installed by `delux agents install`; reinstalling replaces this file.
 // Reports an OMP session's status to tmux, where Delux reads it.
 //
 // Install on each computer that runs OMP inside tmux:
-//   cp delux-agent-status.ts ~/.omp/agent/extensions/
+//   delux agents install omp
 //
 // It sets the pane option `@agent_status` to "working", "waiting" or "done",
 // followed by the Unix time of the change. Outside tmux it does nothing.

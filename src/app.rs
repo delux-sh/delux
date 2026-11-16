@@ -655,6 +655,18 @@ fn select_session<'a>(sessions: &'a [Session], selector: &str) -> Result<&'a Ses
 }
 
 pub fn run(args: Vec<OsString>) -> i32 {
+    // Hooks are best-effort even with malformed/non-UTF-8 arguments. Bypass
+    // diagnostics, help output, signal setup and discovery entirely.
+    if args.first().is_some_and(|arg| arg == "agent-status")
+        && args.get(1).is_some_and(|arg| arg == "hook")
+    {
+        let args: Vec<_> = args[1..]
+            .iter()
+            .map(|arg| arg.to_str().unwrap_or(""))
+            .collect();
+        crate::agents::report(&args);
+        return 0;
+    }
     let args: Result<Vec<_>, _> = args.into_iter().map(OsString::into_string).collect();
     let args = match args {
         Ok(args) => args,
@@ -717,6 +729,14 @@ fn run_with_cancel(cancel: &Cancel, args: &[String]) -> i32 {
             None => writeln!(io::stdout(), "delux {}", env!("CARGO_PKG_VERSION")),
         };
         return 0;
+    }
+    if opts.command == "agent-status" {
+        let args: Vec<_> = opts.agent_args.iter().map(String::as_str).collect();
+        crate::agents::report(&args);
+        return 0;
+    }
+    if opts.command == "agents" {
+        return crate::agents::run(&opts.agent_args, &mut io::stdout(), &mut io::stderr());
     }
     crate::ssh_mux::begin();
     let commands = cancel.child();

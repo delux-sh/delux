@@ -30,6 +30,10 @@ Picker previews use read-only `tmux capture-pane`. Both previews and the embedde
 
 Agent status is untrusted pane metadata: Delux accepts only the fixed states `working`, `waiting`, and `done` with an optional Unix timestamp. Raw status text is never rendered or executed.
 
+Agent setup is opt-in: `delux agents install` is the only operation that adds reporting to other programs' settings, and runs only when you invoke it. It adds only Delux's own hook entries, preserves other settings (including JSON key order and duplicate keys), and keeps a one-time `.delux-backup` before modifying an existing settings file. `delux agents uninstall` removes only Delux's entries (or its marked OMP adapter, which needs no backup). Both preserve settings-file symlinks and permission bits and refuse malformed JSON. Agent settings files and updates are limited to 1 MiB. Updates briefly lock the existing parent directory, without leaving lock files there; unavailable locks cause an error rather than waiting.
+
+Installed hooks invoke Delux with a fixed argument list. Hook payload text is never passed to a shell: the reporter reads only the fields needed for a status decision, bounds its input, and invokes tmux directly with arguments. The hook command never writes to stdout and fails silently; tmux execution is limited to two seconds.
+
 ## Discovery and local data
 
 ### Which computers are contacted

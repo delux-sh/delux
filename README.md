@@ -82,13 +82,18 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 
 ### Agent status
 
-Agents can report a per-pane status through tmux, for example:
+Run this on each computer where agents run inside tmux:
 
 ```sh
-tmux set -p @agent_status waiting
+delux agents install          # wire detected Claude Code, Codex and OMP installations
+delux agents                  # show what is found and wired
 ```
 
-The fixed states are `working`, `waiting`, and `done`, optionally followed by a Unix timestamp in seconds (for example, `working 1794700000`). Delux shows status in the picker and `delux list`; JSON sessions include `agent` as `null` or an object with `state` and optional timestamp `since` (`null` when absent). A `working` status becomes stale after ten minutes without a newer status or pane output. Integration adapters belong in `adapters/`; no adapter is required to set the option manually.
+For Codex, open Codex and run `/hooks` once to trust the new hooks. Restart agent sessions that were already running. Use `delux agents install NAME` to select a tool, or `delux agents uninstall [NAME...]` to remove Delux reporting.
+
+For any other tool, call `delux agent-status set working`, `delux agent-status set waiting`, or `delux agent-status set done` from its hooks, and `delux agent-status clear` on session start/end. These commands do nothing outside tmux and silently ignore tmux failures.
+
+The fixed states are `working`, `waiting`, and `done`, with a Unix timestamp supplied by the reporter. Delux shows status in the picker and `delux list`; JSON sessions include `agent` as `null` or an object with `state` and optional timestamp `since` (`null` when absent). A `working` status becomes stale after ten minutes without a newer status or pane output. The [adapter contract](adapters/README.md) also supports setting the tmux option directly.
 
 ### A few boundaries
 
