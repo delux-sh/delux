@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, List, ListItem, Padding, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -14,7 +14,7 @@ use crate::app::Status;
 use crate::crt::{self, Effects, Screen, Signal};
 use crate::display::display;
 use crate::theme;
-use crate::tmux::Session;
+use crate::tmux::{AgentState, AgentStatus, Session};
 
 impl Picker {
     fn counts(&self) -> (usize, usize, usize) {
@@ -147,6 +147,26 @@ impl Picker {
                 tint.selected()
             });
         frame.render_stateful_widget(list, list_area, &mut self.list_state);
+        // List highlighting otherwise overwrites semantic marker colours.
+        let marker_x = self.list_area.x + 2;
+        if marker_x < self.list_area.right() {
+            let now = (self.services.now)();
+            for (y, row) in self
+                .rows
+                .iter()
+                .skip(self.list_state.offset())
+                .take(usize::from(self.list_area.height))
+                .enumerate()
+            {
+                if let Some(session) = self.session(*row)
+                    && visible_agent(session, now).is_some()
+                {
+                    let marker = agent_marker(session, now, tint, sidebar_inactive);
+                    frame.buffer_mut()[(marker_x, self.list_area.y + y as u16)]
+                        .set_style(marker.style.remove_modifier(Modifier::REVERSED));
+                }
+            }
+        }
         if let Some(area) = preview_area {
             if signing_in {
                 self.render_sign_in(frame, area);
@@ -328,6 +348,22 @@ impl Picker {
                     self.entries.len()
                 ),
                 theme::muted(),
+            ));
+        }
+        let waiting = self
+            .entries
+            .iter()
+            .flat_map(Entry::sessions)
+            .filter(|session| {
+                session
+                    .agent
+                    .is_some_and(|agent| agent.state == AgentState::Waiting)
+            })
+            .count();
+        if waiting > 0 {
+            spans.push(Span::styled(
+                format!(" · {waiting} waiting"),
+                theme::warning(),
             ));
         }
         Line::from(spans)
@@ -547,7 +583,7 @@ impl Picker {
     /// Session details live in the preview; rows use names and short ages.
     fn render_rows(&self, width: u16, inactive: bool) -> Vec<ListItem<'static>> {
         let content_width = usize::from(width.saturating_sub(4));
-        let name_width = content_width.saturating_sub(8);
+        let name_width = content_width.saturating_sub(9);
         let tint = self.tint;
         let (heading, text, secondary) = if inactive {
             let muted = theme::inactive_sidebar();
@@ -563,7 +599,7 @@ impl Picker {
             _ => row.entry,
         };
         // Pinned rows share the room with their computer, taking at most half.
-        let pinned_room = content_width.saturating_sub(10);
+        let pinned_room = content_width.saturating_sub(11);
         let host_width = self
             .rows
             .iter()
@@ -598,6 +634,12 @@ impl Picker {
             let padding = width.saturating_sub(UnicodeWidthStr::width(name.as_str()));
             format!("{name}{}", " ".repeat(padding))
         };
+        let marker = |session: Option<&Session>| {
+            session.map_or_else(
+                || Span::raw(" "),
+                |session| agent_marker(session, now, tint, inactive),
+            )
+        };
         self.rows
             .iter()
             .copied()
@@ -610,8 +652,11 @@ impl Picker {
                         heading,
                     )],
                     RowKind::Pinned => {
-                        let mut spans =
-                            vec![Span::styled("★ ", heading), Span::styled(padded(row), text)];
+                        let mut spans = vec![
+                            marker(self.session(row)),
+                            Span::styled("★ ", heading),
+                            Span::styled(padded(row), text),
+                        ];
                         let detail = self.session(row).map(|session| {
                             Span::styled(format!("  {}", details(session)), secondary)
                         });
@@ -626,6 +671,7 @@ impl Picker {
                             self.state.is_pinned(&entry.worker.key, &session.name)
                         });
                         let mut spans = vec![
+                            marker(session),
                             Span::styled(if pinned { "★ " } else { "  " }, heading),
                             Span::styled(padded(row), text),
                         ];
@@ -702,9 +748,50 @@ fn fit_name(value: &str, width: usize) -> String {
     name
 }
 
+fn visible_agent(session: &Session, now: i64) -> Option<AgentStatus> {
+    session.agent.filter(|agent| {
+        agent.state != AgentState::Working
+            || now.saturating_sub(agent.since.unwrap_or(0).max(session.output)) <= 600
+    })
+}
+
+fn agent_marker(session: &Session, now: i64, tint: theme::Tint, inactive: bool) -> Span<'static> {
+    let state = visible_agent(session, now).map(|agent| agent.state);
+    let style = match state {
+        Some(AgentState::Waiting) => theme::warning().add_modifier(Modifier::BOLD),
+        Some(AgentState::Error) => theme::error().remove_modifier(Modifier::BOLD | Modifier::DIM),
+        _ if inactive => theme::inactive_sidebar().remove_modifier(Modifier::BOLD | Modifier::DIM),
+        Some(AgentState::Working) => tint.secondary().remove_modifier(Modifier::BOLD),
+        Some(AgentState::Done) => theme::success().remove_modifier(Modifier::BOLD | Modifier::DIM),
+        None => tint.secondary(),
+    };
+    Span::styled(
+        match state {
+            Some(AgentState::Working | AgentState::Waiting) => "●",
+            Some(AgentState::Done) => "✓",
+            Some(AgentState::Error) => "✗",
+            None => " ",
+        },
+        style,
+    )
+}
+
 /// The active pane's command, its directory, activity age, windows and clients.
 fn session_details(session: &Session, now: i64) -> String {
     let mut details = Vec::new();
+    if let Some(agent) = visible_agent(session, now) {
+        let state = match agent.state {
+            AgentState::Waiting => "waiting",
+            AgentState::Working => "working",
+            AgentState::Done => "done",
+            AgentState::Error => "error",
+        };
+        let age = agent
+            .since
+            .map(|since| format!(" {}", short_age(now, since)))
+            .unwrap_or_default();
+        details.push(format!("agent {state}{age}"));
+    }
     if !session.command.is_empty() {
         details.push(display(&session.command, 40));
     }

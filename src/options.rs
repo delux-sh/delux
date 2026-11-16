@@ -14,12 +14,14 @@ pub struct Options {
     pub version: bool,
     pub worker: String,
     pub session: String,
+    pub agent_args: Vec<String>,
 }
 
 pub fn parse_options(args: &[String]) -> Result<Options, String> {
     let mut opts = Options::default();
     let mut positional = Vec::new();
     let mut flags = true;
+    let mut agent_label = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if flags && arg == "--" {
@@ -32,6 +34,18 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
                 None => (arg.as_str(), None),
             };
             match name {
+                "--agent" => {
+                    let value = match supplied {
+                        Some(value) => value,
+                        None => args
+                            .next()
+                            .map(String::as_str)
+                            .ok_or("--agent needs a name")?,
+                    };
+                    if agent_label.replace(value).is_some() {
+                        return Err("--agent may only be supplied once".into());
+                    }
+                }
                 "--config" | "--host" => {
                     let value = match supplied {
                         Some(value) => value,
@@ -73,7 +87,42 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
     if opts.help || opts.version {
         return Ok(opts);
     }
+    if agent_label.is_some()
+        && (opts.command != "agent-status"
+            || !matches!(positional.get(1).copied(), Some("set" | "clear")))
+    {
+        return Err("--agent is available only with agent-status set or clear".into());
+    }
     match opts.command.as_str() {
+        "agents" | "agent-status" => {
+            if !opts.config_path.is_empty()
+                || !opts.hosts.is_empty()
+                || opts.local_only
+                || opts.no_local
+                || opts.json
+            {
+                return Err(format!(
+                    "{} does not accept discovery or configuration flags",
+                    opts.command
+                ));
+            }
+            opts.agent_args = positional[1..]
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect();
+            if let Some(label) = agent_label {
+                opts.agent_args.extend(["--agent".into(), label.into()]);
+            }
+            crate::agents::validate(
+                &opts.command,
+                &opts
+                    .agent_args
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            )?;
+            return Ok(opts);
+        }
         "" => {}
         "list" => {
             if positional.len() != 1 {
@@ -94,7 +143,7 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
         }
         _ => {
             return Err(format!(
-                "unknown command {} (use list or attach)",
+                "unknown command {} (use list, attach, agents or agent-status)",
                 opts.command
             ));
         }
@@ -121,7 +170,7 @@ pub fn print_help(out: &mut dyn Write, command: &str) {
     }
     let _ = writeln!(
         out,
-        "Usage: delux [options]\n       delux list [options] [--json]\n       delux attach [--config PATH] COMPUTER SESSION\n\nFind and attach to existing tmux sessions across your computers.\n\nOptions:\n  --config PATH   CLI JSON configuration path\n  --host DEST     Probe an SSH computer/alias instead of Tailscale (repeatable)\n  --local         Only inspect the local default tmux server\n  --no-local      Do not inspect local sessions\n  --json          Structured inventory and errors (list only)\n  -h, --help      Show help\n  -V, --version   Show version\n\nPicker list: computers contain their sessions; ↑↓ or j/k move.\nEnter opens a session or signs in/checks access on a computer needing setup.\n/ filters computers and sessions, u sets the SSH user, f pins a session,\np cycles tint (cyan, green, amber), r rescans, q quits.\nTab focuses the connected terminal, or opens the selected session if none.\nShift-Tab returns to the list without disconnecting.\nTerminal focus sends normal keys to the session; tmux prefix + d detaches.\nUse delux attach for a full-terminal attachment without the picker.\nSSH configuration and credentials stay in OpenSSH; no Delux service is needed."
+        "Usage: delux [options]\n       delux list [options] [--json]\n       delux attach [--config PATH] COMPUTER SESSION\n       delux agents [status]\n       delux agents install [claude|codex|gemini|opencode|pi|omp|<id> ...]\n       delux agents uninstall [claude|codex|gemini|opencode|pi|omp|<id> ...]\n       delux agent-status set <working|waiting|blocked|done|error> [--agent NAME] | clear [--agent NAME] | hook <agent> <event>\n\nFind and attach to existing tmux sessions across your computers.\n\nOptions:\n  --config PATH   CLI JSON configuration path\n  --host DEST     Probe an SSH computer/alias instead of Tailscale (repeatable)\n  --local         Only inspect the local default tmux server\n  --no-local      Do not inspect local sessions\n  --json          Structured inventory and errors (list only)\n  --agent NAME    Reporter ownership label (agent-status set/clear only)\n  -h, --help      Show help\n  -V, --version   Show version\n\nPicker list: computers contain their sessions; ↑↓ or j/k move.\nEnter opens a session or signs in/checks access on a computer needing setup.\n/ filters computers and sessions, u sets the SSH user, f pins a session,\np cycles tint (cyan, green, amber), r rescans, q quits.\nTab focuses the connected terminal, or opens the selected session if none.\nShift-Tab returns to the list without disconnecting.\nTerminal focus sends normal keys to the session; tmux prefix + d detaches.\nUse delux attach for a full-terminal attachment without the picker.\nSSH configuration and credentials stay in OpenSSH; no Delux service is needed."
     );
 }
 

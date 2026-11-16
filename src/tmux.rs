@@ -1,7 +1,65 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::exit_codes::SESSION_CHANGED;
+
+// Derived ordering is pane urgency, from least to most urgent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentState {
+    Done,
+    Working,
+    Error,
+    Waiting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct AgentStatus {
+    pub state: AgentState,
+    pub since: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentStatusRow {
+    pub server_pid: i64,
+    pub server_start: i64,
+    pub session_id: String,
+    pub output: i64,
+    pub agent: Option<AgentStatus>,
+}
+
+pub fn parse_agent_status(value: &str) -> Option<AgentStatus> {
+    let (state, since) = match value.split_once(' ') {
+        Some((state, epoch)) => {
+            if epoch.len() > 12 || !tmux_digits(epoch) {
+                return None;
+            }
+            let epoch = epoch.parse::<i64>().ok()?;
+            if epoch == 0 {
+                return None;
+            }
+            (state, Some(epoch))
+        }
+        None => (value, None),
+    };
+    let state = match state {
+        "working" => AgentState::Working,
+        "waiting" | "blocked" => AgentState::Waiting,
+        "done" => AgentState::Done,
+        "error" => AgentState::Error,
+        "idle" => return None,
+        _ => return None,
+    };
+    Some(AgentStatus { state, since })
+}
+
+fn merge_agent_status(current: &mut Option<AgentStatus>, next: Option<AgentStatus>) {
+    if let Some(next) = next
+        && current.is_none_or(|old| (next.state, next.since) > (old.state, old.since))
+    {
+        *current = Some(next);
+    }
+}
 
 /// Display metadata and the lifetime identity used when attaching.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -21,6 +79,7 @@ pub struct Session {
     pub output: i64,
     pub command: String,
     pub path: String,
+    pub agent: Option<AgentStatus>,
 }
 
 // -N was added in tmux 3.2. Probe it without connecting to a server; checking
@@ -83,10 +142,19 @@ EOF
     };
 }
 
+// Reject unsafe option bytes before list-panes adds record delimiters. Encoding
+// the complete list afterwards cannot distinguish injected newlines from panes.
+macro_rules! agent_status_prelude {
+    () => {
+        "agent_status_format='#{?pane_program_state,#{pane_program_state},#{?#{m/r:[^a-z0-9 ],#{@agent_status}},,#{@agent_status}}}'\n"
+    };
+}
+
 pub const INVENTORY_SCRIPT: &str = concat!(
     tmux_prelude!(),
     encoding_prelude!(),
     session_times_prelude!(),
+    agent_status_prelude!(),
     r#"
 emit() {
     encode "$1" || exit 72
@@ -104,13 +172,13 @@ status=$?
 if [ "$status" -ne 0 ]; then
     case "$status:$sessions" in
         '1:no server running on '*|'1:error connecting to '*' (No such file or directory)')
-            printf '%s\n' 'DELUX_SESSIONS_3' 'DELUX_END'
+            printf '%s\n' 'DELUX_SESSIONS_4' 'DELUX_END'
             exit 0
             ;;
         *) printf '%s\n' "$sessions" >&2; exit 73 ;;
     esac
 fi
-printf '%s\n' 'DELUX_SESSIONS_3'
+printf '%s\n' 'DELUX_SESSIONS_4'
 for session in $sessions; do
     case "$session" in '$'*) digits=${session#?} ;; *) exit 73 ;; esac
     case "$digits" in ''|*[!0-9]*) exit 73 ;; esac
@@ -140,7 +208,10 @@ for session in $sessions; do
     done
     emit "$output" '\t'
     field "$target" '#{pane_current_command}' '\t'
-    field "$target" '#{pane_current_path}' '\n'
+    field "$target" '#{pane_current_path}' '\t'
+    # Native status comes from the program itself and needs no installed hooks.
+    pane_status=$(tmux_cmd list-panes -s -t "$target" -F "$agent_status_format") || exit 73
+    emit "$pane_status" '\n'
     after=$(session_times "$session") || exit 73
     set -- $after
     [ "$#" -eq 5 ] && [ "$before" = "$1 $2 $3 $4" ] || exit 73
@@ -148,6 +219,75 @@ done
 printf '%s\n' 'DELUX_END'
 "#
 );
+
+pub const STATUS_SCRIPT: &str = concat!(
+    tmux_prelude!(),
+    agent_status_prelude!(),
+    r##"
+# Native status comes from the program itself and needs no installed hooks.
+rows=$(tmux_cmd list-panes -a -F "#{pid} #{start_time} #{session_id} #{window_activity} $agent_status_format" 2>&1)
+status=$?
+if [ "$status" -ne 0 ]; then
+    case "$status:$rows" in
+        '1:no server running on '*|'1:error connecting to '*' (No such file or directory)')
+            printf '%s\n' 'DELUX_STATUS_2' 'DELUX_END'
+            exit 0
+            ;;
+        *) printf '%s\n' "$rows" >&2; exit 73 ;;
+    esac
+fi
+printf '%s\n' 'DELUX_STATUS_2'
+[ -z "$rows" ] || printf '%s\n' "$rows"
+printf '%s\n' 'DELUX_END'
+"##
+);
+
+/// Parse one complete pane-status frame, retaining empty session aggregates.
+pub fn parse_status(output: &str) -> Result<Vec<AgentStatusRow>, String> {
+    let malformed = || "Malformed or truncated tmux status".to_owned();
+    let mut records = output.strip_suffix('\n').unwrap_or(output).split('\n');
+    if records.next() != Some("DELUX_STATUS_2") || records.next_back() != Some("DELUX_END") {
+        return Err(malformed());
+    }
+    let mut result: Vec<AgentStatusRow> = Vec::new();
+    let mut indices = HashMap::new();
+    for record in records {
+        let mut fields = record.splitn(5, ' ');
+        let pid = fields.next().ok_or_else(malformed)?;
+        let start = fields.next().ok_or_else(malformed)?;
+        let id = fields.next().ok_or_else(malformed)?;
+        let output = fields.next().ok_or_else(malformed)?;
+        if !tmux_digits(pid)
+            || !tmux_digits(start)
+            || !id.strip_prefix('$').is_some_and(tmux_digits)
+            || !tmux_digits(output)
+        {
+            return Err(malformed());
+        }
+        let server_pid = pid.parse::<i64>().map_err(|_| malformed())?;
+        let server_start = start.parse::<i64>().map_err(|_| malformed())?;
+        let output = output.parse::<i64>().map_err(|_| malformed())?;
+        if server_pid == 0 || server_start == 0 || output == 0 {
+            return Err(malformed());
+        }
+        let agent = fields.next().and_then(parse_agent_status);
+        if let Some(&index) = indices.get(&(server_pid, server_start, id)) {
+            let row: &mut AgentStatusRow = &mut result[index];
+            row.output = row.output.max(output);
+            merge_agent_status(&mut row.agent, agent);
+        } else {
+            indices.insert((server_pid, server_start, id), result.len());
+            result.push(AgentStatusRow {
+                server_pid,
+                server_start,
+                session_id: id.into(),
+                output,
+                agent,
+            });
+        }
+    }
+    Ok(result)
+}
 
 fn tmux_digits(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
@@ -200,7 +340,7 @@ pub fn parse_inventory(output: &str) -> Result<Vec<Session>, String> {
         .unwrap_or(output)
         .split('\n')
         .collect();
-    if records.len() < 2 || records[0] != "DELUX_SESSIONS_3" || records.last() != Some(&"DELUX_END")
+    if records.len() < 2 || records[0] != "DELUX_SESSIONS_4" || records.last() != Some(&"DELUX_END")
     {
         return Err("Malformed or truncated tmux inventory".into());
     }
@@ -208,10 +348,10 @@ pub fn parse_inventory(output: &str) -> Result<Vec<Session>, String> {
     let mut seen = HashSet::with_capacity(records.len() - 2);
     for record in &records[1..records.len() - 1] {
         let fields: Vec<_> = record.split('\t').collect();
-        if fields.len() != 12 {
+        if fields.len() != 13 {
             return Err("Malformed tmux inventory record".into());
         }
-        let mut values = [const { String::new() }; 12];
+        let mut values = [const { String::new() }; 13];
         for (value, field) in values.iter_mut().zip(fields) {
             *value = decode_tmux_field(field)?;
         }
@@ -224,7 +364,25 @@ pub fn parse_inventory(output: &str) -> Result<Vec<Session>, String> {
                 .parse()
                 .map_err(|_| "Invalid tmux numeric field".to_owned())?;
         }
-        let [id, name, _, _, _, _, socket_path, _, _, _, command, path] = values;
+        let [
+            id,
+            name,
+            _,
+            _,
+            _,
+            _,
+            socket_path,
+            _,
+            _,
+            _,
+            command,
+            path,
+            panes,
+        ] = values;
+        let mut agent = None;
+        for pane in panes.split('\n') {
+            merge_agent_status(&mut agent, parse_agent_status(pane));
+        }
         let session = Session {
             id,
             name,
@@ -238,6 +396,7 @@ pub fn parse_inventory(output: &str) -> Result<Vec<Session>, String> {
             output: numbers[6],
             command,
             path,
+            agent,
         };
         validate_session(&session)?;
         if let Some(server) = result.first()
@@ -493,6 +652,7 @@ mod tests {
             output: 1700000003,
             command: "sleep".into(),
             path: "/tmp/work".into(),
+            agent: None,
         }
     }
 
@@ -510,15 +670,26 @@ mod tests {
             s.output.to_string(),
             s.command.clone(),
             s.path.clone(),
+            s.agent.map_or_else(String::new, |agent| {
+                let state = match agent.state {
+                    AgentState::Working => "working",
+                    AgentState::Waiting => "waiting",
+                    AgentState::Done => "done",
+                    AgentState::Error => "error",
+                };
+                agent
+                    .since
+                    .map_or_else(|| state.into(), |since| format!("{state} {since}"))
+            }),
         ]
     }
 
     fn encoded_frame(fields: &[String]) -> String {
-        format!("DELUX_SESSIONS_3\n{}\nDELUX_END\n", fields.join("\t"))
+        format!("DELUX_SESSIONS_4\n{}\nDELUX_END\n", fields.join("\t"))
     }
 
     fn frame(sessions: &[Session]) -> String {
-        let mut result = String::from("DELUX_SESSIONS_3\n");
+        let mut result = String::from("DELUX_SESSIONS_4\n");
         for session in sessions {
             result.push_str(
                 &fields(session)
@@ -531,6 +702,191 @@ mod tests {
         }
         result.push_str("DELUX_END\n");
         result
+    }
+
+    #[test]
+    fn agent_status_grammar_table() {
+        for (value, expected) in [
+            ("working", Some((AgentState::Working, None))),
+            ("waiting 1", Some((AgentState::Waiting, Some(1)))),
+            ("blocked", Some((AgentState::Waiting, None))),
+            ("blocked 1", Some((AgentState::Waiting, Some(1)))),
+            ("error", Some((AgentState::Error, None))),
+            ("error 1", Some((AgentState::Error, Some(1)))),
+            (
+                "done 999999999999",
+                Some((AgentState::Done, Some(999999999999))),
+            ),
+            ("working 000000000001", Some((AgentState::Working, Some(1)))),
+            ("", None),
+            ("Working", None),
+            ("idle", None),
+            ("idle 1", None),
+            ("done ", None),
+            (" done", None),
+            ("done 0", None),
+            ("done 000", None),
+            ("done 1234567890123", None),
+            ("done +1", None),
+            ("done -1", None),
+            ("done １", None),
+            ("done ١", None),
+            ("done  1", None),
+            ("done\t1", None),
+            ("done 1 ", None),
+            ("done 1\n", None),
+            ("done 1 2", None),
+        ] {
+            assert_eq!(
+                parse_agent_status(value),
+                expected.map(|(state, since)| AgentStatus { state, since }),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inventory_aggregates_all_panes_and_rejects_twelve_fields() {
+        for (panes, expected) in [
+            (
+                "done 90\nworking 20\nerror 99\nwaiting 1\nwaiting 3\nwaiting",
+                "waiting 3",
+            ),
+            ("waiting\nworking 999", "waiting"),
+            ("done 90\nworking\nworking 2", "working 2"),
+            ("done\ndone 3\ndone 1", "done 3"),
+            ("working 999\nerror\nerror 2\ndone 999", "error 2"),
+            ("error 999\nwaiting", "waiting"),
+            ("waiting\nerror 999", "waiting"),
+            ("error\nworking 999", "error"),
+            ("idle\nworking\nidle 1", "working"),
+            ("done\nidle\nidle 1", "done"),
+            ("idle\nidle 1", ""),
+            ("blocked\nerror\nidle", "waiting"),
+            ("idle\nerror\nidle", "error"),
+            ("invalid\nworking 0\n", ""),
+        ] {
+            let mut values = fields(&sample());
+            values[12] = panes.into();
+            let encoded: Vec<_> = values.iter().map(|v| STANDARD.encode(v)).collect();
+            assert_eq!(
+                parse_inventory(&encoded_frame(&encoded)).unwrap()[0].agent,
+                parse_agent_status(expected)
+            );
+            assert!(parse_inventory(&encoded_frame(&encoded[..12])).is_err());
+        }
+        let mut session = sample();
+        session.agent = parse_agent_status("working 42");
+        assert_eq!(
+            parse_inventory(&frame(&[session.clone()])).unwrap(),
+            vec![session]
+        );
+    }
+
+    #[test]
+    fn status_aggregates_by_session_and_server_identity() {
+        let output = "DELUX_STATUS_2\n1 2 $0 10 done 99\n1 2 $0 20 working 5\n1 2 $0 15 waiting 1\n1 2 $0 12 waiting 8\n1 2 $0 1 waiting\n1 2 $1 1 invalid\n2 2 $0 1 working\n1 3 $0 1 done\nDELUX_END\n";
+        for output in [output, output.strip_suffix('\n').unwrap()] {
+            let rows = parse_status(output).unwrap();
+            assert_eq!(rows.len(), 4);
+            assert_eq!(
+                rows[0],
+                AgentStatusRow {
+                    server_pid: 1,
+                    server_start: 2,
+                    session_id: "$0".into(),
+                    output: 20,
+                    agent: parse_agent_status("waiting 8")
+                }
+            );
+            assert_eq!(rows[1].agent, None);
+            assert_eq!(rows[2].agent, parse_agent_status("working"));
+            assert_eq!(rows[3].agent, parse_agent_status("done"));
+        }
+        assert!(
+            parse_status("DELUX_STATUS_2\nDELUX_END\n")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            parse_status("DELUX_STATUS_2\n1 2 $0 1 \nDELUX_END").unwrap()[0].agent,
+            None
+        );
+    }
+
+    #[test]
+    fn status_parses_native_states_without_timestamps() {
+        let output = concat!(
+            "DELUX_STATUS_2\n",
+            "1 2 $0 1 error\n",
+            "1 2 $0 1 blocked\n",
+            "1 2 $0 1 idle\n",
+            "1 2 $1 1 idle\n",
+            "1 2 $1 1 working\n",
+            "1 2 $1 1 error\n",
+            "1 2 $1 1 done\n",
+            "1 2 $2 1 idle\n",
+            "DELUX_END\n",
+        );
+        let rows = parse_status(output).unwrap();
+        assert_eq!(rows.len(), 3);
+        for (row, state) in
+            rows.iter()
+                .zip([Some(AgentState::Waiting), Some(AgentState::Error), None])
+        {
+            assert_eq!(
+                row.agent,
+                state.map(|state| AgentStatus { state, since: None })
+            );
+        }
+    }
+
+    #[test]
+    fn status_rejects_incomplete_frames_and_invalid_identities() {
+        let good = "DELUX_STATUS_2\n1 2 $0 1 working\nDELUX_END\n";
+        for output in [
+            String::new(),
+            "DELUX_STATUS_2".into(),
+            good.replace("DELUX_END\n", ""),
+            format!("{good}{good}"),
+            format!("banner\n{good}"),
+            format!("{good}noise\n"),
+            format!("{good}\n"),
+            good.replace('\n', "\r\n"),
+            good.replace("STATUS_2", "STATUS_1"),
+        ] {
+            assert!(parse_status(&output).is_err(), "{output:?}");
+        }
+        for row in [
+            "",
+            "1",
+            "1 2",
+            "1 2 $",
+            "1 2 0",
+            "-1 2 $0",
+            "+1 2 $0",
+            "1 ٢ $0",
+            "1 2 $１",
+            "1  2 $0",
+            "1\t2 $0",
+            "9223372036854775808 2 $0",
+            "1 9223372036854775808 $0",
+            "0 2 $0 1 working",
+            "1 0 $0 1 working",
+            "1 2 $0 0 working",
+            "1 2 $0 -1 working",
+            "1 2 $0 9223372036854775808 working",
+            "1 2 $0 working",
+            "noise",
+            "DELUX_END",
+        ] {
+            let output = format!("DELUX_STATUS_2\n1 2 $0 1 done\n{row}\nDELUX_END\n");
+            assert!(parse_status(&output).is_err(), "{row:?}");
+        }
+        for value in ["garbage", "working 0", "waiting  1", "done\t9", "done 1\r"] {
+            let output = format!("DELUX_STATUS_2\n1 2 $0 1 {value}\nDELUX_END\n");
+            assert_eq!(parse_status(&output).unwrap()[0].agent, None);
+        }
     }
 
     #[test]
@@ -564,8 +920,9 @@ mod tests {
             format!("{good}\n"),
             format!("banner\n{good}"),
             format!("{good}noise\n"),
-            good.replace("DELUX_SESSIONS_3", "DELUX_INVENTORY_1"),
-            good.replace("DELUX_SESSIONS_3", "DELUX_SESSIONS_2"),
+            good.replace("DELUX_SESSIONS_4", "DELUX_INVENTORY_1"),
+            good.replace("DELUX_SESSIONS_4", "DELUX_SESSIONS_2"),
+            good.replace("DELUX_SESSIONS_4", "DELUX_SESSIONS_3"),
             "DELUX_SESSIONS_1\nDELUX_END\n".into(),
             good.replacen('\t', "", 1),
             good.replacen('\t', "\t\t", 1),
@@ -984,6 +1341,7 @@ case "$1" in
         esac
         ;;
     list-windows) printf '1700000003\n' ;;
+    list-panes) printf '\n' ;;
     *) exit 99 ;;
 esac
 "#,
@@ -1658,6 +2016,171 @@ esac
             f.sessions().is_empty(),
             "attach or preview restarted server"
         );
+    }
+
+    #[test]
+    fn live_agent_status_covers_multiple_windows_panes_and_sessions() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else { return };
+        f.must_tmux(&["rename-window", "-t", "first:", "one"]);
+        f.must_tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            "first:one",
+            "@agent_status",
+            "done 90",
+        ]);
+        f.must_tmux(&["split-window", "-d", "-t", "first:one", "sleep 120"]);
+        f.must_tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            "first:one.1",
+            "@agent_status",
+            "working 50",
+        ]);
+        f.must_tmux(&["new-window", "-d", "-t", "first:", "-n", "two", "sleep 120"]);
+        f.must_tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            "first:two",
+            "@agent_status",
+            "waiting 10",
+        ]);
+        f.must_tmux(&["new-session", "-d", "-s", "second", "sleep 120"]);
+        f.must_tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            "second:",
+            "@agent_status",
+            "done 30",
+        ]);
+        f.must_tmux(&["new-session", "-d", "-s", "third", "sleep 120"]);
+        f.must_tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            "third:",
+            "@agent_status",
+            "not-a-state",
+        ]);
+        let sessions = f.sessions();
+        assert_eq!(sessions.len(), 3);
+        let result = f.script(STATUS_SCRIPT);
+        assert_eq!(result.status, 0, "{result:?}");
+        let rows = parse_status(&result.stdout).unwrap();
+        assert_eq!(rows.len(), 3);
+        for session in sessions {
+            let expected = match session.name.as_str() {
+                "first" => parse_agent_status("waiting 10"),
+                "second" => parse_agent_status("done 30"),
+                "third" => None,
+                name => panic!("unexpected session {name}"),
+            };
+            assert_eq!(session.agent, expected);
+            assert!(rows.contains(&AgentStatusRow {
+                server_pid: session.server_pid,
+                server_start: session.server_start,
+                session_id: session.id,
+                output: session.output,
+                agent: expected,
+            }));
+        }
+        f.must_tmux(&["kill-server"]);
+        let result = f.script(STATUS_SCRIPT);
+        assert_eq!(result.status, 0, "{result:?}");
+        assert!(parse_status(&result.stdout).unwrap().is_empty());
+    }
+
+    #[test]
+    fn live_agent_status_rejects_record_injection_before_framing() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else { return };
+        let session = f.session();
+        for value in [
+            "invalid\nwaiting 99".to_owned(),
+            format!(
+                "done\n{} {} {} 1 waiting 99",
+                session.server_pid, session.server_start, session.id
+            ),
+            "working\nDELUX_END\nDELUX_STATUS_2".to_owned(),
+            "waiting\t1".to_owned(),
+            "waiting\r".to_owned(),
+            "#{pane_program_state}".to_owned(),
+        ] {
+            f.must_tmux(&["set-option", "-p", "-t", "first:", "@agent_status", &value]);
+            assert_eq!(f.session().agent, None, "{value:?}");
+            let result = f.script(STATUS_SCRIPT);
+            assert_eq!(result.status, 0, "{result:?}");
+            let rows = parse_status(&result.stdout).unwrap();
+            assert_eq!(rows.len(), 1, "{value:?}");
+            assert_eq!(rows[0].agent, None, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn live_native_osc_status_takes_precedence_over_fallback() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else { return };
+        let session = f.session();
+        for (native, expected) in [
+            ("working", "working"),
+            ("blocked", "waiting"),
+            ("error", "error"),
+            ("done", "done"),
+            ("idle", ""),
+            ("clear", "waiting 7"),
+        ] {
+            f.must_tmux(&[
+                "set-option",
+                "-p",
+                "-t",
+                "first:",
+                "@agent_status",
+                "waiting 7",
+            ]);
+            let emitted = f.script_in_pane(
+                &session,
+                &format!("printf '\\033]7501;state={native}\\007' > /dev/tty"),
+            );
+            assert_eq!(emitted.status, 0, "{emitted:?}");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let value = f.tmux(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "first:",
+                    "#{pane_program_state}",
+                ]);
+                assert_eq!(value.status, 0, "{value:?}");
+                if value.stdout.trim() == if native == "clear" { "" } else { native } {
+                    break;
+                }
+                if native == "working"
+                    && Instant::now() >= deadline
+                    && value.stdout.trim().is_empty()
+                {
+                    eprintln!("skipping: tmux does not expose OSC 7501 program status");
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "OSC state not received: {native}"
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+            let expected = parse_agent_status(expected);
+            assert_eq!(f.session().agent, expected, "{native}");
+            let result = f.script(STATUS_SCRIPT);
+            assert_eq!(result.status, 0, "{result:?}");
+            let rows = parse_status(&result.stdout).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].agent, expected, "{native}");
+        }
     }
 
     #[test]

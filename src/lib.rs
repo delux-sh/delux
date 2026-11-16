@@ -1,5 +1,6 @@
 //! Find existing tmux sessions across your computers and attach through SSH.
 
+mod agents;
 mod ansi;
 mod app;
 mod cancel;

@@ -80,11 +80,30 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
 
+### Agent status
+
+On tmux versions that support OSC 7501 program status (newer than 3.8), tools that emit it show their status with no setup. For older tmux versions or tools that do not emit it, run this on each computer where agents run inside tmux:
+
+```sh
+delux agents install          # wire detected Claude Code, Codex, Gemini CLI, OpenCode, Pi and OMP
+delux agents                  # show what is found and wired
+```
+
+Pi and OMP share one adapter; if `PI_CODING_AGENT_DIR` points them at the same directory, uninstalling either removes reporting for both.
+
+Other tools with a compatible hooks file can be described in `~/.config/delux/agents/<id>.json` (or the corresponding `XDG_CONFIG_HOME` directory). See [Define your own agent](adapters/README.md#define-your-own-agent) for the format and limits.
+
+For Codex, open Codex and run `/hooks` once to trust the new hooks. Restart agent sessions that were already running. Use `delux agents install NAME` to select a tool, or `delux agents uninstall [NAME...]` to remove Delux reporting.
+
+For any other tool, call `delux agent-status set working`, `delux agent-status set waiting` (or `blocked`), `delux agent-status set done`, or `delux agent-status set error` from its hooks, and `delux agent-status clear` on session start/end. These commands do nothing outside tmux and silently ignore tmux failures.
+
+The states shown are `working`, `waiting`, `done`, and `error` (failed and stopped); `idle` shows nothing. Native program status takes precedence over installed hooks. Delux shows status in the picker and `delux list`; JSON sessions include `agent` as `null` or an object with `state` and optional timestamp `since` (`null` when absent). The reporter supplies a Unix timestamp; native status has none. A `working` status becomes stale after ten minutes without a newer status or pane output. The [adapter contract](adapters/README.md) also supports setting the tmux option directly.
+
 ### A few boundaries
 
 Delux finds **existing sessions on the default tmux server**. It doesn't create sessions or discover custom `tmux -L` / `-S` servers.
 
-Session ages show when output last changed, not whether a program is busy or finished.
+Session ages show when output last changed; explicit agent status separately reports whether an agent is working, waiting, done, or stopped with an error.
 
 The embedded terminal supports keyboard input and mouse-wheel scrolling, but not mouse clicks/dragging, terminal graphics, or advanced keyboard protocols. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
 

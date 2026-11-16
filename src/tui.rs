@@ -16,7 +16,7 @@ use crate::embedded::EmbeddedTerminal;
 use crate::exit_codes;
 use crate::state::{State, StateChange};
 use crate::theme::Tint;
-use crate::tmux::Session;
+use crate::tmux::{AgentState, AgentStatusRow, Session};
 use crate::workers::Worker;
 
 mod drawing;
@@ -34,6 +34,7 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(250);
 /// A visible preview older than this is refetched while it stays selected.
 const PREVIEW_REFRESH: Duration = Duration::from_secs(1);
+const STATUS_REFRESH: Duration = Duration::from_secs(5);
 /// How long the preview shows static after the selection changes.
 const SELECTION_STATIC: Duration = Duration::from_millis(150);
 
@@ -44,6 +45,8 @@ type Preview = Arc<
         + Send
         + Sync,
 >;
+type AgentStatuses =
+    Arc<dyn Fn(&Cancel, &Worker) -> Result<Vec<AgentStatusRow>, String> + Send + Sync>;
 type SaveMapping = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
 type UpdateState = Box<dyn FnMut(StateChange<'_>) -> Result<State, String>>;
 
@@ -54,6 +57,7 @@ struct Services {
     discover: Discover,
     scan: Scan,
     preview: Preview,
+    agent_status: AgentStatuses,
     resolve_user: ResolveUser,
     sharing_active: Box<dyn Fn(&str) -> bool>,
     save_mapping: SaveMapping,
@@ -110,9 +114,16 @@ struct Entry {
 impl Entry {
     fn update_inventory(&mut self, mut inventory: Inventory, reorder: bool) {
         if reorder || self.inventory.is_none() {
-            inventory
-                .sessions
-                .sort_by_key(|session| std::cmp::Reverse(session.activity));
+            // Only waiting calls for attention ahead of activity, not failed agents.
+            inventory.sessions.sort_by_key(|session| {
+                (
+                    !reorder
+                        || !session
+                            .agent
+                            .is_some_and(|agent| agent.state == AgentState::Waiting),
+                    std::cmp::Reverse(session.activity),
+                )
+            });
         } else {
             let positions: HashMap<&str, usize> = self
                 .sessions()
@@ -244,6 +255,10 @@ enum Message {
         generation: u64,
         inventory: Option<Inventory>,
     },
+    AgentStatuses {
+        generation: u64,
+        results: Vec<(Worker, Result<Vec<AgentStatusRow>, String>)>,
+    },
     Preview {
         generation: u64,
         destination: Option<String>,
@@ -274,6 +289,11 @@ enum Command {
         cancel: Cancel,
         workers: Vec<Worker>,
     },
+    AgentStatuses {
+        generation: u64,
+        cancel: Cancel,
+        workers: Vec<Worker>,
+    },
     Preview {
         worker: Worker,
         session: Session,
@@ -289,6 +309,8 @@ struct Picker {
     scan_cancel: Option<Cancel>,
     scanning: bool,
     reorder_on_scan: bool,
+    status_inflight: Option<u64>,
+    status_refreshed: Option<Instant>,
     pending: HashSet<String>,
     frame: usize,
     entries: Vec<Entry>,
@@ -342,6 +364,8 @@ impl Picker {
             scanning: false,
             reorder_on_scan: false,
             pending: HashSet::new(),
+            status_inflight: None,
+            status_refreshed: None,
             frame: 0,
             entries: Vec::new(),
             warning: String::new(),
@@ -511,6 +535,43 @@ impl Picker {
                 }
                 self.rebuild();
             }
+            Message::AgentStatuses {
+                generation,
+                results,
+            } => {
+                if self.status_inflight == Some(generation) {
+                    self.status_inflight = None;
+                }
+                if generation != self.generation || self.quit {
+                    return None;
+                }
+                for (worker, result) in results {
+                    let Ok(rows) = result else { continue };
+                    let Some(inventory) = self
+                        .entries
+                        .iter_mut()
+                        .find(|entry| {
+                            entry.worker.key == worker.key
+                                && entry.worker.destination == worker.destination
+                        })
+                        .and_then(|entry| entry.inventory.as_mut())
+                        .filter(|inventory| inventory.status == Status::Ready)
+                    else {
+                        continue;
+                    };
+                    for row in rows {
+                        if let Some(session) = inventory.sessions.iter_mut().find(|session| {
+                            session.id == row.session_id
+                                && session.server_pid == row.server_pid
+                                && session.server_start == row.server_start
+                        }) {
+                            session.agent = row.agent;
+                            // Unselected sessions do not receive preview output updates.
+                            session.output = session.output.max(row.output);
+                        }
+                    }
+                }
+            }
             Message::Preview {
                 generation,
                 destination,
@@ -650,11 +711,53 @@ impl Picker {
         self.rebuild();
     }
 
-    /// Fetches the selected session's preview once the selection has rested,
-    /// and refreshes it while it stays selected. Only one fetch runs at a time.
+    /// Advances the preview, and on ticks where the preview needs nothing,
+    /// starts a due status refresh. A tick carries one command, and the
+    /// selection's preview must never wait behind a background refresh.
     fn tick(&mut self, now: Instant) -> Option<Command> {
         self.clock = Some(now);
         self.static_seed = self.static_seed.wrapping_add(1);
+        let refreshed = *self.status_refreshed.get_or_insert(now);
+        self.preview_tick(now)
+            .or_else(|| self.status_tick(now, refreshed))
+    }
+
+    fn status_tick(&mut self, now: Instant, refreshed: Instant) -> Option<Command> {
+        if self.quit
+            || self.scanning
+            || self.status_inflight.is_some()
+            || now.saturating_duration_since(refreshed) < STATUS_REFRESH
+        {
+            return None;
+        }
+        self.status_refreshed = Some(now);
+        let workers: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                !entry.sessions().is_empty()
+                    && entry
+                        .worker
+                        .destination
+                        .as_deref()
+                        .is_none_or(|destination| (self.services.sharing_active)(destination))
+            })
+            .map(|entry| entry.worker.clone())
+            .collect();
+        if workers.is_empty() {
+            return None;
+        }
+        self.status_inflight = Some(self.generation);
+        Some(Command::AgentStatuses {
+            generation: self.generation,
+            cancel: self.cancel.child(),
+            workers,
+        })
+    }
+
+    /// Fetches the selected session's preview once the selection has rested,
+    /// and refreshes it while it stays selected. Only one fetch runs at a time.
+    fn preview_tick(&mut self, now: Instant) -> Option<Command> {
         let previewing = self.preview_visible && !self.shows_terminal();
         if previewing && self.selection != self.screen_selection {
             self.screen_selection = self.selection.clone();
