@@ -36,6 +36,12 @@ impl Picker {
         let tint = self.tint;
         self.terminal_visible = false;
         self.list_area = Rect::default();
+        if let Some(confirmation) = &mut self.ending {
+            self.preview_visible = false;
+            self.list_height = 0;
+            confirmation.render(frame, area, tint);
+            return;
+        }
         let signing_in = self.input.as_ref().is_some_and(|input| input.connect);
         let creating = self.creation.is_some();
         if creating && area.height < 5 {
@@ -457,6 +463,7 @@ impl Picker {
                     "open",
                 ),
                 ("q", "quit"),
+                ("x", "end session…"),
                 ("/", "filter"),
                 ("a", "add"),
                 ("f", "pin"),

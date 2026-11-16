@@ -100,4 +100,34 @@ final class TmuxProtocolTests: XCTestCase {
         session.serverStarted = 0
         XCTAssertThrowsError(try TmuxProtocol.attach(session))
     }
+
+    func testEndingRequiresExactLifetimeAcknowledgment() throws {
+        let session = try XCTUnwrap(TmuxProtocol.parseInventory(frame([fields()])).first)
+        let receipt = "DELUX_ENDED_1 $7 1234 1700000000\n"
+        XCTAssertNoThrow(try TmuxProtocol.parseEnded(Data(receipt.utf8), session: session))
+        for response in ["", "DELUX_ENDED_1\n", String(receipt.dropLast()),
+                         receipt.replacingOccurrences(of: "$7", with: "$8"),
+                         receipt.replacingOccurrences(of: "1234", with: "1235"),
+                         receipt.replacingOccurrences(of: "1700000000", with: "1700000001"),
+                         "banner\n" + receipt, receipt + receipt] {
+            XCTAssertThrowsError(try TmuxProtocol.parseEnded(Data(response.utf8), session: session)) { error in
+                guard case EndSessionError.uncertain = error else { return XCTFail("Expected uncertain result: \(error)") }
+            }
+        }
+        XCTAssertThrowsError(try TmuxProtocol.parseEnded(Data("DELUX_STALE\n".utf8), session: session)) { error in
+            guard case EndSessionError.stale = error else { return XCTFail("Expected stale identity: \(error)") }
+        }
+    }
+
+    func testEndingRejectsInvalidTargetBeforeExecution() throws {
+        var session = try XCTUnwrap(TmuxProtocol.parseInventory(frame([fields()])).first)
+        session.id = "$7;kill-server"
+        XCTAssertThrowsError(try TmuxProtocol.ending(session))
+        session.id = "$7"
+        session.serverPID = 0
+        XCTAssertThrowsError(try TmuxProtocol.ending(session))
+        session.serverPID = 1234
+        session.serverStarted = 0
+        XCTAssertThrowsError(try TmuxProtocol.ending(session))
+    }
 }

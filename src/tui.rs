@@ -20,6 +20,7 @@ use crate::theme::Tint;
 use crate::tmux::{AgentState, AgentStatusRow, NewSession, Session};
 use crate::workers::Worker;
 
+mod confirmation;
 mod drawing;
 mod input;
 mod layout;
@@ -29,6 +30,8 @@ pub use runtime::run_picker;
 
 #[cfg(test)]
 mod tests;
+
+use confirmation::EndConfirmation;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// A selection must rest this long before its preview is fetched.
@@ -273,6 +276,11 @@ enum Message {
         worker: Worker,
         result: Result<(Session, Vec<Session>), (Status, String)>,
     },
+    Ended {
+        worker: Worker,
+        session: Session,
+        result: Result<(), (Status, String)>,
+    },
     Attached(Result<AttachOutcome, String>),
     Checked(Inventory),
     Spinner,
@@ -311,6 +319,11 @@ enum Command {
         request: NewSession,
         cancel: Cancel,
     },
+    End {
+        worker: Worker,
+        session: Session,
+        cancel: Cancel,
+    },
     Launch(Choice),
 }
 
@@ -334,6 +347,8 @@ struct Picker {
     input: Option<UserInput>,
     creation: Option<SessionForm>,
     creation_pending: Option<Cancel>,
+    ending: Option<EndConfirmation>,
+    ending_pending: Option<Cancel>,
     add_input: Option<String>,
     select_added: Option<String>,
     rows: Vec<Row>,
@@ -392,6 +407,8 @@ impl Picker {
             input: None,
             creation: None,
             creation_pending: None,
+            ending: None,
+            ending_pending: None,
             add_input: None,
             select_added: None,
             rows: Vec::new(),
@@ -729,6 +746,59 @@ impl Picker {
                     }
                 }
             }
+            Message::Ended {
+                worker,
+                session,
+                result,
+            } => {
+                self.ending_pending.take()?;
+                self.ending = None;
+                match result {
+                    Ok(()) => {
+                        if self
+                            .active
+                            .as_ref()
+                            .is_some_and(|active| active.matches(&worker, Some(&session)))
+                        {
+                            // Drop only this client; tmux may otherwise switch it
+                            // to a surviving session when detach-on-destroy is off.
+                            self.active = None;
+                            self.terminal_focused = false;
+                            self.terminal_visible = false;
+                            self.terminal_error = None;
+                        }
+                        if let Some(inventory) = self
+                            .entries
+                            .iter_mut()
+                            .find(|entry| {
+                                entry.worker.key == worker.key
+                                    && entry.worker.destination == worker.destination
+                            })
+                            .and_then(|entry| entry.inventory.as_mut())
+                        {
+                            inventory
+                                .sessions
+                                .retain(|current| !same_session(current, &session));
+                        }
+                        self.previews.remove(&(worker.key, session.id));
+                        self.notice = format!(
+                            "Ended {} on {}. Rescanning.",
+                            display(&session.name, 120),
+                            display(&worker.name, 120),
+                        );
+                        self.rebuild();
+                    }
+                    Err((_, detail)) => {
+                        self.notice = format!(
+                            "End session: {} Rescanning; no retry was sent.",
+                            display(&detail, 600)
+                        );
+                    }
+                }
+                // A terminal exit may already have started a pre-mutation scan.
+                // Its results must not put the ended session back in the list.
+                return Some(self.rescan(false));
+            }
             Message::Attached(result) => {
                 self.active = None;
                 self.terminal_focused = false;
@@ -853,7 +923,10 @@ impl Picker {
     /// Fetches the selected session's preview once the selection has rested,
     /// and refreshes it while it stays selected. Only one fetch runs at a time.
     fn preview_tick(&mut self, now: Instant) -> Option<Command> {
-        let previewing = self.creation.is_none() && self.preview_visible && !self.shows_terminal();
+        let previewing = self.creation.is_none()
+            && self.ending.is_none()
+            && self.preview_visible
+            && !self.shows_terminal();
         if previewing && self.selection != self.screen_selection {
             self.screen_selection = self.selection.clone();
             self.static_until = Some(now + SELECTION_STATIC);

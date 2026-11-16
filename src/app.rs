@@ -288,6 +288,38 @@ pub fn create_session(
     parse_created_session(&result.stdout).map_err(|error| uncertain((Status::ProbeFailed, error)))
 }
 
+/// End exactly once, using the same bounded noninteractive path as creation.
+pub fn end_session(
+    cancel: &Cancel,
+    worker: &Worker,
+    session: &Session,
+) -> Result<(), (Status, String)> {
+    let script = crate::tmux::end_script(session).map_err(|error| (Status::ProbeFailed, error))?;
+    let uncertain = |(status, detail): (Status, String)| {
+        (
+            status,
+            format!(
+                "{}. The session may already have ended; rescan before trying again.",
+                detail.trim_end_matches('.')
+            ),
+        )
+    };
+    let result = run_computer_command(cancel, worker, &script, Duration::from_secs(12), false)
+        .map_err(|error| uncertain((Status::ProbeFailed, error.to_string())))?;
+    let receipt = crate::tmux::parse_ended_session(session, &result.stdout);
+    if receipt.is_ok() {
+        return Ok(());
+    }
+    if result.code != 0 {
+        let error = failure(result.code, &result.stderr);
+        return Err(match result.code {
+            MISSING_TMUX | UNSUPPORTED_TMUX | MISSING_TOOLS | SESSION_CHANGED => error,
+            _ => uncertain(error),
+        });
+    }
+    receipt.map_err(|error| uncertain((Status::ProbeFailed, error)))
+}
+
 /// Capture a preview within five seconds, plus bounded SSH master reset on timeout.
 pub fn preview(
     cancel: &Cancel,

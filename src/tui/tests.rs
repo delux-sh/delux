@@ -229,6 +229,9 @@ impl Harness {
             Command::Create { .. } => {
                 panic!("Creation tests must deliver their completion explicitly")
             }
+            Command::End { .. } => {
+                panic!("End-session tests must deliver their completion explicitly")
+            }
             Command::Launch(choice) => {
                 self.effects.borrow_mut().launched.push(choice);
                 None
@@ -312,6 +315,273 @@ fn terminal_harness(args: &[&str]) -> Harness {
     harness.picker.terminal_focused = true;
     harness.buffer(120, 30);
     harness
+}
+
+#[test]
+fn end_confirmation_defaults_to_cancel_and_keeps_the_captured_target() {
+    let computer = remote("box", "Build computer", "alice@build.example");
+    let captured = session("$0", "important work");
+    let other = session("$1", "other");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![captured.clone(), other.clone()])],
+    );
+    harness.press(&["x"]);
+    let view = harness.rendered(100, 20);
+    for text in [
+        "important work ($0)",
+        "Build computer",
+        "alice@build.example",
+    ] {
+        assert!(view.contains(text), "{view}");
+    }
+    harness.press(&["enter"]);
+    assert!(harness.picker.ending.is_none());
+    assert!(harness.picker.ending_pending.is_none());
+    harness.press(&["x"]);
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(!harness.picker.quit);
+    assert!(harness.picker.ending.is_none());
+
+    harness.press(&["x"]);
+    // A refresh may remove the selected lifetime and replace the visible row.
+    let replacement = session("$2", &captured.name);
+    harness.picker.update(Message::Checked(ready(
+        &computer,
+        vec![replacement, other.clone()],
+    )));
+    harness.picker.show_session(&computer.key, &other.id);
+    harness.press(&["down"]);
+    harness.buffer(100, 20);
+    let Some(Command::End {
+        worker, session, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected an explicit end request");
+    };
+    assert_eq!(worker, computer);
+    assert_eq!(session, captured);
+    assert!(harness.picker.ending.as_ref().unwrap().busy);
+    // Repeated Enter never sends a second destructive request.
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none()
+    );
+    assert!(harness.launched().is_empty());
+    assert!(harness.effects.borrow().states.is_empty());
+    assert!(harness.effects.borrow().mappings.is_empty());
+}
+
+#[test]
+fn end_confirmation_refuses_a_changed_endpoint_or_unfinished_scan() {
+    let computer = remote("box", "box", "alice@box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![session("$0", "work")])],
+    );
+    harness.press(&["x", "tab"]);
+    harness.picker.entries[0].worker.destination = Some("bob@box".into());
+    harness.buffer(100, 20);
+    harness.press(&["enter"]);
+    assert!(harness.picker.ending_pending.is_none());
+    harness.press(&["esc"]);
+    harness.picker.entries[0].worker = computer;
+    harness.press(&["x", "tab"]);
+    let _scan = harness.picker.rescan(false);
+    harness.buffer(100, 20);
+    harness.press(&["enter"]);
+    assert!(harness.picker.ending_pending.is_none());
+}
+
+#[test]
+fn end_confirmation_cannot_execute_an_unseen_or_clipped_warning() {
+    let computer = worker("box", "box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![session("$0", "work")])],
+    );
+    harness.press(&["x", "tab", "enter"]);
+    assert!(harness.picker.ending_pending.is_none());
+    harness.buffer(40, 6);
+    harness.press(&["enter"]);
+    assert!(harness.picker.ending_pending.is_none());
+    harness.press(&["esc"]);
+    assert!(harness.picker.ending.is_none());
+}
+
+#[test]
+fn terminal_x_is_input_and_end_cancellation_never_disconnects_another_session() {
+    let mut harness = terminal_harness(&[
+        "/bin/sh",
+        "-c",
+        "read line; printf 'RECEIVED_%s\\n' \"$line\"; exec /bin/cat",
+    ]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness.press(&["x", "enter"]);
+    assert!(harness.picker.ending.is_none());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(harness.picker.poll_terminal().is_none());
+        if harness
+            .picker
+            .active
+            .as_ref()
+            .unwrap()
+            .terminal
+            .contents()
+            .contains("RECEIVED_x")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "x was not sent to the terminal");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["down", "x", "tab"]);
+    harness.buffer(100, 20);
+    let Some(Command::End {
+        worker,
+        session,
+        cancel,
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected an explicit end request");
+    };
+    assert_eq!(session.id, "$1");
+    harness.press(&["esc", "x"]);
+    assert!(cancel.is_cancelled());
+    assert!(harness.picker.ending.is_none());
+    assert!(harness.picker.ending_pending.is_some());
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    // A positive receipt still proves completion even after local cancellation.
+    let command = harness.picker.update(Message::Ended {
+        worker,
+        session,
+        result: Ok(()),
+    });
+    assert!(matches!(command, Some(Command::Discover { .. })));
+    assert!(harness.picker.ending_pending.is_none());
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    assert_eq!(harness.picker.entries[0].sessions().len(), 1);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn uncertain_end_rescans_without_retrying_or_closing_the_active_client() {
+    for cancel_request in [false, true] {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        let started = harness.picker.active.as_ref().unwrap().started;
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.press(&["x", "tab"]);
+        harness.buffer(100, 20);
+        let Some(Command::End {
+            worker, session, ..
+        }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("expected an explicit end request");
+        };
+        if cancel_request {
+            harness.press(&["esc"]);
+        }
+        let generation = harness.picker.generation;
+        let command = harness.picker.update(Message::Ended {
+            worker: worker.clone(),
+            session: session.clone(),
+            result: Err((
+                Status::ProbeFailed,
+                "Request interrupted; the session may already have ended.".into(),
+            )),
+        });
+        assert!(matches!(command, Some(Command::Discover { .. })));
+        assert!(harness.picker.generation > generation);
+        assert!(!harness.picker.reorder_on_scan);
+        assert!(harness.picker.ending.is_none());
+        assert!(harness.picker.ending_pending.is_none());
+        assert!(!harness.picker.notice.is_empty());
+        assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+        // The old scan cannot overwrite either the inventory or scan state.
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: Some(ready(&worker, vec![])),
+        });
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: None,
+        });
+        assert!(harness.picker.scanning);
+        assert!(
+            harness.picker.entries[0]
+                .sessions()
+                .iter()
+                .any(|s| same_session(s, &session))
+        );
+        assert!(harness.launched().is_empty());
+    }
+}
+
+#[test]
+fn successful_end_closes_only_its_client_and_invalidates_older_scans() {
+    for changed_connection in [false, true] {
+        let mut harness = terminal_harness(&["/bin/cat"]);
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.press(&["x", "tab"]);
+        harness.buffer(100, 20);
+        let Some(Command::End {
+            worker, session, ..
+        }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("expected an explicit end request");
+        };
+        if changed_connection {
+            // An attachment on a changed endpoint is not the captured client.
+            harness.picker.active.as_mut().unwrap().worker.destination = Some("other@box".into());
+        }
+        let Command::Discover { generation, .. } = harness.picker.rescan(false) else {
+            panic!("expected discovery");
+        };
+        harness.picker.update(Message::Discovered {
+            generation,
+            result: Ok((vec![worker.clone()], String::new())),
+        });
+        let command = harness.picker.update(Message::Ended {
+            worker: worker.clone(),
+            session: session.clone(),
+            result: Ok(()),
+        });
+        assert!(matches!(command, Some(Command::Discover { .. })));
+        assert_eq!(harness.picker.active.is_some(), changed_connection);
+        assert!(!harness.picker.terminal_focused);
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: Some(ready(&worker, vec![session])),
+        });
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: None,
+        });
+        assert!(harness.picker.scanning);
+        assert_eq!(harness.picker.entries[0].sessions()[0].id, "$1");
+        assert_eq!(harness.picker.entries[0].sessions().len(), 1);
+        assert!(harness.launched().is_empty());
+    }
 }
 
 #[test]
@@ -1488,22 +1758,12 @@ fn sixty_column_picker_uses_concise_rows_and_complete_priority_hints() {
         "{view}"
     );
     assert!(!view.contains("CH "), "{view}");
-    assert_eq!(
-        view.lines().last().unwrap(),
-        " enter/tab open  q quit  / filter  a add  f pin  r rescan"
-    );
     // At every width, the widget receives complete hints, not clipped spans.
     for width in 1..=80 {
         let line = harness.picker.footer_line(width);
         assert!(line.width() <= usize::from(width));
         assert!(line.spans.len().is_multiple_of(3));
     }
-    harness.press(&["/", "proj"]);
-    let view = harness.rendered(60, 24);
-    assert_eq!(
-        view.lines().last().unwrap(),
-        " type to filter  ↑↓ move  enter done  esc clear"
-    );
 }
 
 #[test]

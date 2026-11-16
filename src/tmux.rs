@@ -610,6 +610,46 @@ pub fn attach_script(session: &Session, embedded: bool) -> Result<String, String
     Ok(script)
 }
 
+/// End only the captured lifetime in one synchronous queue on the existing server.
+pub fn end_script(session: &Session) -> Result<String, String> {
+    validate_session(session)?;
+    let target = format!("{}:", session.id);
+    let condition = identity_condition(session);
+    // A receipt after kill-session proves the mutation completed, even when
+    // ending the last session makes the server exit before its client does.
+    let action = format!(
+        "kill-session -t {} ; display-message -p {}",
+        shell_quote(&session.id),
+        shell_quote(&end_acknowledgment(session)),
+    );
+    let stale = format!(
+        "display-message -p 'DELUX_STALE: selected session changed' ; run-shell 'exit {SESSION_CHANGED}'"
+    );
+    let mut script = String::from(TMUX_PRELUDE);
+    script.push_str("exec tmux -u -N -L default");
+    for argument in ["if-shell", "-F", "-t", &target, &condition, &action, &stale] {
+        script.push(' ');
+        script.push_str(&shell_quote(argument));
+    }
+    script.push('\n');
+    Ok(script)
+}
+
+fn end_acknowledgment(session: &Session) -> String {
+    format!(
+        "DELUX_ENDED_1 {} {} {}",
+        session.id, session.server_pid, session.server_start
+    )
+}
+
+pub fn parse_ended_session(session: &Session, output: &str) -> Result<(), String> {
+    if output.strip_suffix('\n').unwrap_or(output) == end_acknowledgment(session) {
+        Ok(())
+    } else {
+        Err("Missing or mismatched tmux end-session acknowledgment".into())
+    }
+}
+
 /// Guard and switch the current pane's client in the existing tmux server.
 pub fn switch_script(session: &Session) -> Result<String, String> {
     validate_session(session)?;
@@ -1060,6 +1100,128 @@ mod tests {
             let replaced = format!("DELUX_CREATED_1\n{identity}\n{}", frame(&[replacement]));
             assert!(parse_created_session(&replaced).is_err(), "{field}");
         }
+    }
+
+    #[test]
+    fn end_receipt_requires_the_exact_captured_lifetime() {
+        let session = sample();
+        let receipt = format!(
+            "DELUX_ENDED_1 {} {} {}\n",
+            session.id, session.server_pid, session.server_start,
+        );
+        assert_eq!(parse_ended_session(&session, &receipt), Ok(()));
+        for invalid in [
+            String::new(),
+            "DELUX_STALE: selected session changed\n".into(),
+            receipt
+                .trim_end()
+                .trim_end_matches(char::is_numeric)
+                .to_owned(),
+            format!("banner\n{receipt}"),
+            format!("{receipt}{receipt}"),
+            format!("{receipt}trailer\n"),
+        ] {
+            assert!(
+                parse_ended_session(&session, &invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
+        for mutate in [
+            (|s: &mut Session| s.id = "$999999".into()) as fn(&mut Session),
+            |s| s.server_pid += 1,
+            |s| s.server_start += 1,
+        ] {
+            let mut changed = session.clone();
+            mutate(&mut changed);
+            assert!(parse_ended_session(&changed, &receipt).is_err());
+        }
+    }
+
+    #[test]
+    fn live_end_refuses_wrong_identity_restarts_and_absent_servers() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else {
+            return;
+        };
+        let original = f.session();
+        for mutate in [
+            (|s: &mut Session| s.server_pid += 1) as fn(&mut Session),
+            |s| s.server_start += 1,
+            |s| s.socket_path.push_str("other"),
+            |s| s.id = "$999999".into(),
+        ] {
+            let mut stale = original.clone();
+            mutate(&mut stale);
+            let result = f.script(&end_script(&stale).unwrap());
+            assert!(
+                parse_ended_session(&stale, &result.stdout).is_err(),
+                "{result:?}"
+            );
+            assert_ne!(result.status, 0, "{result:?}");
+            assert_eq!(f.session(), original);
+        }
+        f.must_tmux(&["kill-server"]);
+        f.must_tmux(&[
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            &original.name,
+            "sleep 120",
+        ]);
+        let replacement = f.session();
+        assert_eq!(replacement.id, original.id);
+        assert_ne!(replacement.server_pid, original.server_pid);
+        let stale = f.script(&end_script(&original).unwrap());
+        assert_eq!(stale.status, SESSION_CHANGED, "{stale:?}");
+        assert!(parse_ended_session(&original, &stale.stdout).is_err());
+        assert_eq!(f.session(), replacement);
+        f.must_tmux(&["kill-server"]);
+        let absent = f.script(&end_script(&replacement).unwrap());
+        assert_ne!(absent.status, 0, "{absent:?}");
+        assert!(parse_ended_session(&replacement, &absent.stdout).is_err());
+        assert!(f.sessions().is_empty(), "end-session restarted a server");
+    }
+
+    #[test]
+    fn live_end_kills_only_the_exact_target_and_acknowledges_the_last_session() {
+        let _env = env_read();
+        let Some(f) = Fixture::new() else {
+            return;
+        };
+        let original = f.session();
+        f.must_tmux(&["new-session", "-d", "-s", "survivor", "sleep 120"]);
+        let survivor = f
+            .sessions()
+            .into_iter()
+            .find(|s| s.id != original.id)
+            .unwrap();
+        // A rename does not redirect the captured numeric target.
+        f.must_tmux(&["rename-session", "-t", &original.id, "renamed ' ##{pid}"]);
+        let ended = f.script(&end_script(&original).unwrap());
+        assert_eq!(
+            parse_ended_session(&original, &ended.stdout),
+            Ok(()),
+            "{ended:?}"
+        );
+        assert_eq!(f.session(), survivor);
+        // A new session with the old name must never become a fallback target.
+        f.must_tmux(&["rename-session", "-t", &survivor.id, &original.name]);
+        let renamed = f.session();
+        let repeated = f.script(&end_script(&original).unwrap());
+        assert!(
+            parse_ended_session(&original, &repeated.stdout).is_err(),
+            "{repeated:?}"
+        );
+        assert_eq!(f.session(), renamed);
+        let last = f.script(&end_script(&renamed).unwrap());
+        assert_eq!(
+            parse_ended_session(&renamed, &last.stdout),
+            Ok(()),
+            "{last:?}"
+        );
+        assert!(f.sessions().is_empty());
     }
 
     #[test]

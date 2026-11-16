@@ -233,19 +233,38 @@ enum TmuxProtocol {
     }
 
     static func attach(_ session: RemoteSession) throws -> String {
+        return try guardedCommand(session, action: "attach-session -t " + quote(session.id),
+                                  stale: "display-message -p 'DELUX_STALE: selected session changed' ; run-shell 'exit 74'")
+    }
+
+    static func ending(_ session: RemoteSession) throws -> String {
+        let action = "kill-session -t " + quote(session.id) +
+            " ; display-message -p " + quote(endedReceipt(session))
+        return try guardedCommand(session, action: action, stale: "display-message -p 'DELUX_STALE'")
+    }
+
+    static func parseEnded(_ data: Data, session: RemoteSession) throws {
+        if data == Data("DELUX_STALE\n".utf8) { throw EndSessionError.stale }
+        guard data == Data((endedReceipt(session) + "\n").utf8) else {
+            throw EndSessionError.uncertain("The server did not return the exact session acknowledgment.")
+        }
+    }
+
+    private static func endedReceipt(_ session: RemoteSession) -> String {
+        "DELUX_ENDED_1 \(session.id) \(session.serverPID) \(session.serverStarted)"
+    }
+
+    private static func guardedCommand(_ session: RemoteSession, action: String, stale: String) throws -> String {
         guard validID(session.id), session.serverPID > 0, session.serverStarted > 0, session.created > 0 else {
             throw malformed()
         }
-        // IDs are monotonic within a server. Do not format session_created on
-        // a vanished target: older tmux servers can crash doing so. PID/start
-        // plus ID identifies the lifetime, and if-shell -F tests and attaches
-        // in one synchronous command queue without a lookup/attach race.
+        // IDs are monotonic within a server. Formatting session_created on a
+        // vanished target can crash older tmux. ID/PID/start guard both actions
+        // in the same synchronous queue, without a lookup/mutation race.
         let id = "#{==:#{session_id},\(session.id)}"
         let pid = "#{==:#{pid},\(session.serverPID)}"
         let start = "#{==:#{start_time},\(session.serverStarted)}"
         let condition = "#{&&:#{&&:\(id),\(pid)},\(start)}"
-        let action = "attach-session -t " + quote(session.id)
-        let stale = "display-message -p 'DELUX_STALE: selected session changed' ; run-shell 'exit 74'"
         let arguments = ["if-shell", "-F", "-t", session.id + ":", condition, action, stale]
         return shell(prelude + "exec tmux -u -N -L default " + arguments.map(quote).joined(separator: " "))
     }
