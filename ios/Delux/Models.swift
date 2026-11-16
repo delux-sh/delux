@@ -35,6 +35,48 @@ struct RemoteSession: Identifiable, Hashable {
     var serverStarted: Int64
     var created: Int64
     var status: AgentStatus?
+
+    func hasSameLifetime(as other: RemoteSession) -> Bool {
+        id == other.id && serverPID == other.serverPID &&
+            serverStarted == other.serverStarted && created == other.created
+    }
+}
+
+/// A confirmation owns its snapshot, never a live dashboard selection.
+struct EndSessionPrompt: Identifiable {
+    let id = UUID()
+    let computer: Computer
+    let session: RemoteSession
+    let configurationRevision: UUID
+
+    var destination: String { "\(computer.username)@\(computer.hostname):\(computer.port)" }
+    var description: String {
+        "“\(session.name)” (\(session.id)) on “\(computer.name)” (\(destination))"
+    }
+    var warning: String {
+        "End \(description)? This closes all windows and panes and can terminate running programs or agents, losing unsaved work. This cannot be undone. Disconnecting instead keeps the session running."
+    }
+
+    func matches(_ route: SessionRoute) -> Bool {
+        route.computerID == computer.id && route.session.hasSameLifetime(as: session)
+    }
+}
+
+enum EndSessionError: LocalizedError {
+    case changedComputer
+    case stale
+    case uncertain(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .changedComputer:
+            return "The computer configuration changed. Nothing was sent. Review the destination and open a new confirmation."
+        case .stale:
+            return "The selected session ended or its tmux server changed. No replacement session was ended."
+        case .uncertain(let detail):
+            return "\(detail) Ending was not confirmed; the session may have ended. Refresh sessions before deciding what to do. Delux will not retry automatically."
+        }
+    }
 }
 
 enum HostKeyError: Error, LocalizedError {

@@ -1,5 +1,17 @@
 # Verification record
 
+## Explicit session termination (November 16, 2026)
+
+The CLI's list-only `x` action and iPhone session context/terminal menus open a captured-target confirmation naming the session and computer/SSH destination, with Cancel as the default. The command checks numeric session ID and server lifetime in the same tmux queue as `kill-session`, requires an exact completion receipt, never starts a server or falls back to a name, and never automatically retries an uncertain result. Confirmation does not disconnect the active terminal; successful termination closes only the matching client and invalidates older inventory.
+
+New Rust model and real-tmux regressions passed, covering cancellation, terminal-focused `x`, unseen/clipped confirmations, endpoint changes, stale inventory, unrelated active clients, vanished/replaced servers, name reuse, exact-target termination and the final session's receipt. The live backend cases passed on Homebrew tmux 3.8 and the temporary next-3.9 tmux build. Clippy with warnings denied, Rust 1.88 all-target checking and a release build passed. An existing exact footer-wording assertion failed when the new shortcut changed the hint order; that assertion was removed, and the retained width/completeness layout check passed.
+
+Real picker scenarios passed locally and through loopback OpenSSH: default Enter canceled, Escape canceled, a two-window target ended while another connected shell remained usable, and the last connected session ended with a confirmed result. The throwaway driver's filter-clear key and Escape timing were corrected before the successful scenarios.
+
+All 17 canonical iOS simulator tests passed. A real OpenSSH/tmux UI scenario verified the named confirmation, cancellation, context-menu termination, termination from the connected terminal with return to the dashboard, preservation of another session, and final-session success. The initial smoke selector matched two native accessibility wrappers for Cancel; selecting the first matching button fixed the harness. Screenshots were inspected and retained outside the source tree.
+
+Tests used private tmux sockets, temporary SSH keys/configuration and the owned iPhone simulator. Fixture servers, sessions and smoke harnesses were removed. No real user session was ended. Physical iPhone and physical remote-host testing remain unverified; CI is the merge gate. No release or Homebrew publication is included.
+
 ## iPhone companion (November 16, 2026)
 
 A real OMP agent's recognized `touch IOS_AGENT_APPROVED` approval was displayed and accepted through the iPhone terminal. The UI scenario passed; the isolated server contained the marker and OMP displayed `DONE`. All three fixture tmux sessions survived the app's test runs. The fixture SSH server, temporary keys, agent sessions and smoke harness were then removed; screenshots are retained outside the source tree.

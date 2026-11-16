@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 
+use super::confirmation::{ConfirmationAction, EndConfirmation};
 use super::{Command, Picker, RowKind, UserInput};
 use crate::app::{Choice, Status};
 use crate::display::display;
@@ -19,6 +20,9 @@ impl Picker {
             return None;
         }
         self.show_scroll_hint = false;
+        if self.ending.is_some() {
+            return self.ending_key(key);
+        }
         if self.creation.is_some() {
             return self.creation_key(key);
         }
@@ -141,6 +145,7 @@ impl Picker {
             }
             KeyCode::Char('f') => self.toggle_pin(),
             KeyCode::Char('n') => self.start_creation(),
+            KeyCode::Char('x') => self.start_ending(),
             KeyCode::Char('u') => return self.start_user_input(false),
             KeyCode::Char('a') => {
                 if let Some(reason) = self.services.add_computer_unavailable {
@@ -166,6 +171,10 @@ impl Picker {
     }
 
     pub(super) fn start_creation(&mut self) {
+        if self.ending_pending.is_some() {
+            self.notice = "Waiting for the end-session request to settle…".into();
+            return;
+        }
         if self.creation_pending.is_some() {
             self.notice = "Waiting for the previous creation request to stop…".into();
             return;
@@ -232,6 +241,63 @@ impl Picker {
         }
     }
 
+    fn start_ending(&mut self) {
+        if self.ending_pending.is_some() || self.creation_pending.is_some() {
+            self.notice = "Waiting for the previous session request to settle…".into();
+            return;
+        }
+        let Some((worker, session)) = self.selected_session() else {
+            self.notice = "Select a session before choosing End session…".into();
+            return;
+        };
+        self.ending = Some(EndConfirmation::new(worker, session));
+        self.terminal_focused = false;
+        self.notice.clear();
+    }
+
+    fn ending_key(&mut self, key: KeyEvent) -> Option<Command> {
+        match self.ending.as_mut()?.key(key)? {
+            ConfirmationAction::Cancel => {
+                self.ending = None;
+                if let Some(cancel) = &self.ending_pending {
+                    cancel.cancel();
+                    self.notice =
+                        "Stopping request; the session may already have ended. Waiting to rescan."
+                            .into();
+                } else {
+                    self.notice.clear();
+                }
+                None
+            }
+            ConfirmationAction::End => {
+                let confirmation = self.ending.as_mut()?;
+                if self.scanning {
+                    confirmation.error =
+                        "Wait for the rescan to finish before ending a session.".into();
+                    return None;
+                }
+                if !self.entries.iter().any(|entry| {
+                    entry.worker.key == confirmation.worker.key
+                        && entry.worker.destination == confirmation.worker.destination
+                        && entry.status() == Status::Ready
+                }) {
+                    confirmation.error =
+                        "Computer changed or is no longer ready. Cancel and rescan.".into();
+                    return None;
+                }
+                confirmation.busy = true;
+                confirmation.error.clear();
+                let cancel = self.cancel.child();
+                self.ending_pending = Some(cancel.clone());
+                Some(Command::End {
+                    worker: confirmation.worker.clone(),
+                    session: confirmation.session.clone(),
+                    cancel,
+                })
+            }
+        }
+    }
+
     pub(super) fn terminal_mouse_event(&self, mut event: MouseEvent) -> Option<MouseEvent> {
         if !matches!(
             event.kind,
@@ -244,6 +310,7 @@ impl Picker {
             || self.active.is_none()
             || self.input.is_some()
             || self.creation.is_some()
+            || self.ending.is_some()
             || self.add_input.is_some()
             || self.filtering
             || !self
@@ -277,6 +344,7 @@ impl Picker {
         } else if !self.terminal_focused
             && self.input.is_none()
             && self.creation.is_none()
+            && self.ending.is_none()
             && self.add_input.is_none()
             && self.list_area.contains((event.column, event.row).into())
         {
@@ -305,6 +373,7 @@ impl Picker {
         if self.terminal_focused
             || self.input.is_some()
             || self.creation.is_some()
+            || self.ending.is_some()
             || self.add_input.is_some()
             || self.filtering
         {
@@ -329,6 +398,9 @@ impl Picker {
     }
 
     pub(super) fn paste(&mut self, text: &str) -> Option<Command> {
+        if self.ending.is_some() {
+            return None;
+        }
         if let Some(form) = &mut self.creation {
             form.paste(text);
             return None;

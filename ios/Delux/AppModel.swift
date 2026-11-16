@@ -123,11 +123,16 @@ final class AppModel {
     private(set) var storageError: StorageError?
     var path: [SessionRoute] = []
     var hostKeyPrompt: HostKeyPrompt?
+    var endSessionPrompt: EndSessionPrompt?
+    var endSessionError: String?
+    private(set) var endingSession: EndSessionPrompt?
 
     @ObservationIgnored private let store: ComputerStore
     @ObservationIgnored private var transports: [UUID: SSHTransport] = [:]
     @ObservationIgnored private var refreshTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var refreshTokens: [UUID: UUID] = [:]
+    @ObservationIgnored private var computerRevisions: [UUID: UUID] = [:]
+    @ObservationIgnored private var endSessionTask: Task<Void, Never>?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private let monitor = NWPathMonitor()
     @ObservationIgnored private var isForeground = false
@@ -146,6 +151,7 @@ final class AppModel {
         }
         for computer in computers {
             states[computer.id] = ComputerState()
+            computerRevisions[computer.id] = UUID()
         }
         monitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
@@ -176,6 +182,7 @@ final class AppModel {
     func add(_ computer: Computer) throws {
         try persist(computers + [computer])
         states[computer.id] = ComputerState()
+        computerRevisions[computer.id] = UUID()
         refresh(computer.id, promptForHostKey: true)
     }
 
@@ -190,6 +197,8 @@ final class AppModel {
         var renamed = previous
         renamed.name = computer.name
         guard renamed != computer || credentialsChanged else { return }
+        computerRevisions[computer.id] = UUID()
+        interruptEndingSession(on: computer.id, reason: "The computer configuration changed during the request.")
         invalidate(computer.id)
         states[computer.id] = ComputerState()
         if hostKeyPrompt?.computer.id == computer.id { hostKeyPrompt = nil }
@@ -202,6 +211,8 @@ final class AppModel {
     func delete(_ id: UUID) throws {
         guard computers.contains(where: { $0.id == id }) else { return }
         try persist(computers.filter { $0.id != id })
+        computerRevisions[id] = nil
+        interruptEndingSession(on: id, reason: "The computer was removed during the request.")
         if terminal?.route.computerID == id {
             path.removeAll()
             closeTerminal()
@@ -268,7 +279,8 @@ final class AppModel {
     }
 
     func refresh(_ id: UUID, promptForHostKey: Bool = false) {
-        guard let computer = computer(id), refreshTasks[id] == nil, isOnline else { return }
+        guard let computer = computer(id), refreshTasks[id] == nil,
+              endingSession?.computer.id != id, isOnline else { return }
         let token = UUID()
         refreshTokens[id] = token
         refreshTasks[id] = Task { [weak self] in
@@ -289,6 +301,7 @@ final class AppModel {
 
     private func performRefresh(_ computer: Computer, token: UUID, promptForHostKey: Bool) async {
         let id = computer.id
+        guard !Task.isCancelled, refreshTokens[id] == token else { return }
         var state = states[id] ?? ComputerState()
         if !state.hasLoadedOnce { state.phase = .loading }
         state.isRefreshing = true
@@ -356,6 +369,80 @@ final class AppModel {
         }
     }
 
+    func requestEndSession(_ session: RemoteSession, on computer: Computer) {
+        guard endingSession == nil, let revision = computerRevisions[computer.id] else { return }
+        endSessionPrompt = EndSessionPrompt(computer: computer, session: session, configurationRevision: revision)
+    }
+
+    /// Establish the mutation barrier before any suspension. Inventory started
+    /// before this point can no longer publish a snapshot containing the target.
+    func prepareEndSession(_ prompt: EndSessionPrompt) throws {
+        guard endingSession == nil else {
+            throw SSHTransportError.message("Another session is already being ended.")
+        }
+        guard computer(prompt.computer.id) == prompt.computer,
+              computerRevisions[prompt.computer.id] == prompt.configurationRevision else {
+            throw EndSessionError.changedComputer
+        }
+        guard isOnline else { throw SSHTransportError.message("You are offline. Nothing was sent.") }
+        _ = try TmuxProtocol.ending(prompt.session)
+        endSessionPrompt = nil
+        endSessionError = nil
+        invalidate(prompt.computer.id)
+        endingSession = prompt
+    }
+
+    func confirmEndSession(_ prompt: EndSessionPrompt) {
+        endSessionPrompt = nil
+        do { try prepareEndSession(prompt) }
+        catch {
+            endSessionError = "\(prompt.description)\n\n\(error.localizedDescription)"
+            return
+        }
+        endSessionTask = Task { [weak self] in
+            guard let self else { return }
+            let transport = SSHTransport(computer: prompt.computer)
+            let result: Result<Void, Error>
+            do {
+                try Task.checkCancellation()
+                try await transport.endSession(prompt.session)
+                try Task.checkCancellation()
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            await transport.disconnect()
+            self.finishEndSession(prompt, result: result)
+        }
+    }
+
+    /// Only an acknowledged command can remove a route. A canceled operation's
+    /// late reply cannot close a terminal or overwrite the interruption warning.
+    func finishEndSession(_ prompt: EndSessionPrompt, result: Result<Void, Error>) {
+        guard endingSession?.id == prompt.id else { return }
+        endingSession = nil
+        endSessionTask = nil
+        invalidate(prompt.computer.id)
+        switch result {
+        case .success:
+            states[prompt.computer.id]?.sessions.removeAll { $0.hasSameLifetime(as: prompt.session) }
+            path.removeAll(where: prompt.matches)
+            if let terminal, prompt.matches(terminal.route) { closeTerminal() }
+        case .failure(let error):
+            let detail = error is CancellationError
+                ? EndSessionError.uncertain("The request was interrupted.").localizedDescription
+                : error.localizedDescription
+            endSessionError = "\(prompt.description)\n\n\(detail)"
+        }
+        if isForeground { refresh(prompt.computer.id) }
+    }
+
+    private func interruptEndingSession(on id: UUID? = nil, reason: String) {
+        guard let prompt = endingSession, id == nil || prompt.computer.id == id else { return }
+        endSessionTask?.cancel()
+        finishEndSession(prompt, result: .failure(EndSessionError.uncertain(reason)))
+    }
+
     // MARK: - Terminal
 
     func open(_ session: RemoteSession, on computer: Computer) {
@@ -400,6 +487,7 @@ final class AppModel {
             startPolling()
         case .background:
             isForeground = false
+            interruptEndingSession(reason: "The app went into the background before confirmation arrived.")
             stopPolling()
             cancelRefreshes()
             terminal?.suspend()
@@ -417,6 +505,7 @@ final class AppModel {
             terminal?.resume()
             refreshAll()
         } else if !online {
+            interruptEndingSession(reason: "The network disconnected before confirmation arrived.")
             cancelRefreshes()
         }
     }

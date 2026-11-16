@@ -314,6 +314,22 @@ fn execute_command(
                 let _ = sender.send(Message::Created { worker, result });
             });
         }
+        Command::End {
+            worker,
+            session,
+            cancel,
+        } => {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let result = crate::app::end_session(&cancel, &worker, &session);
+                // Cancellation cannot undo a mutation already accepted remotely.
+                let _ = sender.send(Message::Ended {
+                    worker,
+                    session,
+                    result,
+                });
+            });
+        }
         Command::Launch(choice) => {
             if let Some(session) = &choice.session {
                 // Nesting the local session containing Delux would display itself.

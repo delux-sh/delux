@@ -11,6 +11,12 @@ enum SSHTransportError: LocalizedError {
     }
 }
 
+private struct SSHCommandFailure: LocalizedError {
+    let output: Data
+    let message: String
+    var errorDescription: String? { message }
+}
+
 @MainActor
 final class SSHTransport {
     private let computer: Computer
@@ -35,6 +41,31 @@ final class SSHTransport {
             throw error
         } catch {
             throw SSHTransportError.message("\(error.localizedDescription) Creation was not confirmed. The command may have run. Refresh sessions before trying again; do not automatically retry.")
+        }
+    }
+
+    /// A separate transport keeps an unrelated terminal and inventory connection untouched.
+    func endSession(_ session: RemoteSession) async throws {
+        let command = try TmuxProtocol.ending(session)
+        do {
+            let output: Data
+            do {
+                output = try await execute(command)
+            } catch let failure as SSHCommandFailure {
+                // The final session can take its tmux server down after the
+                // queue emitted its receipt. Only that exact receipt is success.
+                if failure.output == Data("DELUX_STALE\n".utf8) { throw EndSessionError.stale }
+                do { try TmuxProtocol.parseEnded(failure.output, session: session) }
+                catch { throw EndSessionError.uncertain(failure.localizedDescription) }
+                return
+            }
+            try TmuxProtocol.parseEnded(output, session: session)
+        } catch let error as HostKeyError {
+            throw error
+        } catch let error as EndSessionError {
+            throw error
+        } catch {
+            throw EndSessionError.uncertain(error.localizedDescription)
         }
     }
 
@@ -465,7 +496,7 @@ private final class SSHSessionHandler: ChannelInboundHandler {
             } else {
                 let detail = String(decoding: stderr.prefix(4096), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 let message = exitStatus.map { "Remote command exited with status \($0)." } ?? "SSH session disconnected. Reconnect to resume."
-                complete(.failure(SSHTransportError.message(detail.isEmpty ? message : "\(message) \(detail)")))
+                complete(.failure(SSHCommandFailure(output: stdout, message: detail.isEmpty ? message : "\(message) \(detail)")))
             }
         }
         context.fireChannelInactive()

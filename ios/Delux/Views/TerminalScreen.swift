@@ -44,6 +44,21 @@ struct TerminalScreen: View {
                 }
                 .accessibilityIdentifier(AccessibilityID.terminalKeyboard)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button(role: .destructive) {
+                        keyboardShown = false
+                        model.requestEndSession(controller.route.session, on: controller.computer)
+                    } label: {
+                        Label("End Session…", systemImage: "stop.circle")
+                    }
+                    .disabled(!model.isOnline || model.endingSession != nil)
+                    .accessibilityIdentifier(AccessibilityID.terminalEndSession)
+                } label: {
+                    Label("Session Actions", systemImage: "ellipsis.circle")
+                }
+                .accessibilityIdentifier(AccessibilityID.terminalMenu)
+            }
         }
         .onDisappear {
             model.terminalDismissed(controller.route)

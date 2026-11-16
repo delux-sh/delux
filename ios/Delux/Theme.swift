@@ -65,6 +65,11 @@ enum AccessibilityID {
     static func computerNewSession(_ id: UUID) -> String { "computer.\(id.uuidString).newSession" }
     static func computerVerifyHostKey(_ id: UUID) -> String { "computer.\(id.uuidString).verifyHostKey" }
     static func sessionRow(computer: UUID, session: String) -> String { "session.\(computer.uuidString).\(session)" }
+    static func sessionEnd(computer: UUID, session: String) -> String { "session.\(computer.uuidString).\(session).end" }
+    static let endSessionCancel = "endSession.cancel"
+    static let endSessionConfirm = "endSession.confirm"
+    static let endSessionProgress = "endSession.progress"
+    static let endSessionError = "endSession.error"
 
     static let formName = "computerForm.name"
     static let formHostname = "computerForm.hostname"
@@ -99,5 +104,7 @@ enum AccessibilityID {
     static let terminalReconnect = "terminal.reconnect"
     static let terminalVerifyHostKey = "terminal.verifyHostKey"
     static let terminalKeyboard = "terminal.keyboard"
+    static let terminalMenu = "terminal.menu"
+    static let terminalEndSession = "terminal.endSession"
     static func terminalKey(_ name: String) -> String { "terminal.key.\(name)" }
 }

@@ -40,6 +40,44 @@ struct DashboardView: View {
         .sheet(item: $model.hostKeyPrompt) { prompt in
             HostKeyPromptView(prompt: prompt)
         }
+        .alert("End Session?", isPresented: Binding(
+            get: { model.endSessionPrompt != nil },
+            set: { if !$0 { model.endSessionPrompt = nil } }
+        ), presenting: model.endSessionPrompt) { prompt in
+            Button("Cancel", role: .cancel) {
+                model.endSessionPrompt = nil
+            }
+            .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier(AccessibilityID.endSessionCancel)
+            Button("End Session", role: .destructive) {
+                model.confirmEndSession(prompt)
+            }
+            .accessibilityIdentifier(AccessibilityID.endSessionConfirm)
+        } message: { prompt in
+            Text(prompt.warning)
+        }
+        .alert("Session End Not Confirmed", isPresented: Binding(
+            get: { model.endSessionError != nil },
+            set: { if !$0 { model.endSessionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.endSessionError = nil }
+        } message: {
+            Text(model.endSessionError ?? "")
+                .accessibilityIdentifier(AccessibilityID.endSessionError)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let prompt = model.endingSession {
+                HStack {
+                    ProgressView()
+                    Text("Ending \(prompt.description)…")
+                        .font(.footnote)
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(.regularMaterial)
+                .accessibilityIdentifier(AccessibilityID.endSessionProgress)
+            }
+        }
     }
 
     private var title: String {
@@ -258,6 +296,15 @@ private struct ComputerSection: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier(AccessibilityID.sessionRow(computer: computer.id, session: session.id))
+            .contextMenu {
+                Button(role: .destructive) {
+                    model.requestEndSession(session, on: computer)
+                } label: {
+                    Label("End Session…", systemImage: "stop.circle")
+                }
+                .disabled(!model.isOnline || model.endingSession != nil)
+                .accessibilityIdentifier(AccessibilityID.sessionEnd(computer: computer.id, session: session.id))
+            }
         }
     }
 }

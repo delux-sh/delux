@@ -66,6 +66,7 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | `tab` | Focus the connected terminal; open the selected session if none is connected |
 | `shift-tab` | Return to the list without disconnecting |
 | `n` | Create a session on the selected computer |
+| `x` | End the selected session, after confirmation |
 | `/` | Filter computers and sessions |
 | `f` | Pin a session |
 | `p` | Cycle the session tint |
@@ -87,6 +88,8 @@ Press `a` in the list to add an SSH destination such as `alice@build-box` or an 
 Duplicate checks include saved computers hidden by `ignore` and mappings saved by another running picker; adding never overwrites an existing mapping.
 
 **New session:** press `n`, or Enter on a ready computer with no sessions. Choose a name, a directory (`~`, `~/path`, or an absolute path), and optionally a command such as `omp`, `claude`, or `codex`. Blank starts the normal shell; a command must be installed on that computer and may end the session when it exits. Tab changes fields; Enter creates and attaches; Esc, Ctrl-C, or Shift-Tab cancels. Sign in first if needed.
+
+**End session:** with the list focused, press `x`. Check the session and computer in the confirmation: ending a session closes all its windows and panes and can terminate running programs or agents, losing unsaved work. **Cancel** is selected initially; use Tab or an arrow key to select **End session**, then Enter. Esc cancels. Delux verifies the captured session identity before ending it; a replacement is never selected by name. If the connection fails, the operation may already have happened: Delux rescans without automatically retrying. Detach and quit still leave sessions running.
 
 ### Agent status
 
@@ -136,6 +139,8 @@ To always include or ignore computers, create `~/.config/delux/cli.json`:
 ## iPhone companion (source build)
 
 `ios/` contains a native SwiftUI dashboard and SwiftTerm terminal over Apple's SwiftNIO SSH. Add a computer by hostname/IP, SSH port and username; see its tmux sessions and agent status, open a terminal, or create a session with a directory and optional command. It connects directly: no Delux daemon or wallet is required on the server.
+
+Long-press a session row and choose **End Session…**, or use the terminal's session-actions menu. The confirmation names the session and SSH destination and defaults to **Cancel**. Ending closes every window and pane in that session; leaving the terminal or backgrounding the app does not.
 
 Use a generated per-computer Ed25519 key (copy its public key into that server account's `authorized_keys`) or an SSH password. Credentials stay in the device-only Keychain. Verify the displayed server fingerprint through another trusted channel before connecting. A changed host key blocks access; forgetting a pin is an explicit action in Edit Computer.
 
