@@ -759,6 +759,7 @@ fn agent_marker(session: &Session, now: i64, tint: theme::Tint, inactive: bool) 
     let state = visible_agent(session, now).map(|agent| agent.state);
     let style = match state {
         Some(AgentState::Waiting) => theme::warning().add_modifier(Modifier::BOLD),
+        Some(AgentState::Error) => theme::error().remove_modifier(Modifier::BOLD | Modifier::DIM),
         _ if inactive => theme::inactive_sidebar().remove_modifier(Modifier::BOLD | Modifier::DIM),
         Some(AgentState::Working) => tint.secondary().remove_modifier(Modifier::BOLD),
         Some(AgentState::Done) => theme::success().remove_modifier(Modifier::BOLD | Modifier::DIM),
@@ -768,6 +769,7 @@ fn agent_marker(session: &Session, now: i64, tint: theme::Tint, inactive: bool) 
         match state {
             Some(AgentState::Working | AgentState::Waiting) => "●",
             Some(AgentState::Done) => "✓",
+            Some(AgentState::Error) => "✗",
             None => " ",
         },
         style,
@@ -782,6 +784,7 @@ fn session_details(session: &Session, now: i64) -> String {
             AgentState::Waiting => "waiting",
             AgentState::Working => "working",
             AgentState::Done => "done",
+            AgentState::Error => "error",
         };
         let age = agent
             .since

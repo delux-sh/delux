@@ -65,7 +65,9 @@ fn reporter_labels_are_validated_and_do_not_change_actions() {
         for (operation, expected) in [
             (vec!["set", "working"], reporter::Action::Set("working")),
             (vec!["set", "waiting"], reporter::Action::Set("waiting")),
+            (vec!["set", "blocked"], reporter::Action::Set("waiting")),
             (vec!["set", "done"], reporter::Action::Set("done")),
+            (vec!["set", "error"], reporter::Action::Set("error")),
             (vec!["clear"], reporter::Action::Clear),
         ] {
             let mut args = vec!["agent-status"];
@@ -185,6 +187,7 @@ fn definition_validation_rejects_every_invalid_field_shape_and_limit() {
         ("events", json!({"": "done"})),
         ("events", json!({"bad\nname": "done"})),
         ("events", json!({"Start": "unknown"})),
+        ("events", json!({"Start": "idle"})),
         ("events", json!({"Start": true})),
         ("events", json!({"Start": {}})),
         ("events", json!({"Start": {"state": 3}})),
@@ -288,6 +291,34 @@ fn definitions_preserve_event_order_expand_home_and_allow_scalar_metadata() {
     );
     value["file"] = json!(root.path().join("absolute.json"));
     assert!(definitions::parse("custom", &value.to_string(), None).is_ok());
+}
+
+#[test]
+fn definitions_accept_reporter_states_and_normalize_blocked() {
+    let root = TempDir::new();
+    for (state, operation) in [
+        ("working", "set working"),
+        ("waiting", "set waiting"),
+        ("blocked", "set waiting"),
+        ("done", "set done"),
+        ("error", "set error"),
+        ("clear", "clear"),
+    ] {
+        for event in [
+            json!(state),
+            json!({"state": state, "matcher": "Permission"}),
+        ] {
+            let mut value = source();
+            value["events"] = json!({"Changed": event});
+            let agent = parse(&root, "custom", &value).unwrap();
+            let entries = agent.entries("delux");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0].command,
+                format!("delux agent-status {operation} --agent custom"),
+            );
+        }
+    }
 }
 
 #[test]

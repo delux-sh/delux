@@ -114,6 +114,7 @@ struct Entry {
 impl Entry {
     fn update_inventory(&mut self, mut inventory: Inventory, reorder: bool) {
         if reorder || self.inventory.is_none() {
+            // Only waiting calls for attention ahead of activity, not failed agents.
             inventory.sessions.sort_by_key(|session| {
                 (
                     !reorder

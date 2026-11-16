@@ -3,11 +3,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::exit_codes::SESSION_CHANGED;
 
+// Derived ordering is pane urgency, from least to most urgent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentState {
     Done,
     Working,
+    Error,
     Waiting,
 }
 
@@ -41,8 +43,10 @@ pub fn parse_agent_status(value: &str) -> Option<AgentStatus> {
     };
     let state = match state {
         "working" => AgentState::Working,
-        "waiting" => AgentState::Waiting,
+        "waiting" | "blocked" => AgentState::Waiting,
         "done" => AgentState::Done,
+        "error" => AgentState::Error,
+        "idle" => return None,
         _ => return None,
     };
     Some(AgentStatus { state, since })
@@ -195,7 +199,8 @@ for session in $sessions; do
     emit "$output" '\t'
     field "$target" '#{pane_current_command}' '\t'
     field "$target" '#{pane_current_path}' '\t'
-    pane_status=$(tmux_cmd list-panes -s -t "$target" -F '#{@agent_status}') || exit 73
+    # Native status comes from the program itself and needs no installed hooks.
+    pane_status=$(tmux_cmd list-panes -s -t "$target" -F '#{?pane_program_state,#{pane_program_state},#{@agent_status}}') || exit 73
     emit "$pane_status" '\n'
     after=$(session_times "$session") || exit 73
     set -- $after
@@ -208,7 +213,8 @@ printf '%s\n' 'DELUX_END'
 pub const STATUS_SCRIPT: &str = concat!(
     tmux_prelude!(),
     r#"
-rows=$(tmux_cmd list-panes -a -F '#{pid} #{start_time} #{session_id} #{@agent_status}' 2>&1)
+# Native status comes from the program itself and needs no installed hooks.
+rows=$(tmux_cmd list-panes -a -F '#{pid} #{start_time} #{session_id} #{?pane_program_state,#{pane_program_state},#{@agent_status}}' 2>&1)
 status=$?
 if [ "$status" -ne 0 ]; then
     case "$status:$rows" in
@@ -650,6 +656,7 @@ mod tests {
                     AgentState::Working => "working",
                     AgentState::Waiting => "waiting",
                     AgentState::Done => "done",
+                    AgentState::Error => "error",
                 };
                 agent
                     .since
@@ -683,6 +690,10 @@ mod tests {
         for (value, expected) in [
             ("working", Some((AgentState::Working, None))),
             ("waiting 1", Some((AgentState::Waiting, Some(1)))),
+            ("blocked", Some((AgentState::Waiting, None))),
+            ("blocked 1", Some((AgentState::Waiting, Some(1)))),
+            ("error", Some((AgentState::Error, None))),
+            ("error 1", Some((AgentState::Error, Some(1)))),
             (
                 "done 999999999999",
                 Some((AgentState::Done, Some(999999999999))),
@@ -691,6 +702,7 @@ mod tests {
             ("", None),
             ("Working", None),
             ("idle", None),
+            ("idle 1", None),
             ("done ", None),
             (" done", None),
             ("done 0", None),
@@ -718,12 +730,21 @@ mod tests {
     fn inventory_aggregates_all_panes_and_rejects_twelve_fields() {
         for (panes, expected) in [
             (
-                "done 90\nworking 20\nwaiting 1\nwaiting 3\nwaiting",
+                "done 90\nworking 20\nerror 99\nwaiting 1\nwaiting 3\nwaiting",
                 "waiting 3",
             ),
             ("waiting\nworking 999", "waiting"),
             ("done 90\nworking\nworking 2", "working 2"),
             ("done\ndone 3\ndone 1", "done 3"),
+            ("working 999\nerror\nerror 2\ndone 999", "error 2"),
+            ("error 999\nwaiting", "waiting"),
+            ("waiting\nerror 999", "waiting"),
+            ("error\nworking 999", "error"),
+            ("idle\nworking\nidle 1", "working"),
+            ("done\nidle\nidle 1", "done"),
+            ("idle\nidle 1", ""),
+            ("blocked\nerror\nidle", "waiting"),
+            ("idle\nerror\nidle", "error"),
             ("invalid\nworking 0\n", ""),
         ] {
             let mut values = fields(&sample());
@@ -771,6 +792,33 @@ mod tests {
             parse_status("DELUX_STATUS_1\n1 2 $0\nDELUX_END").unwrap()[0].agent,
             None
         );
+    }
+
+    #[test]
+    fn status_parses_native_states_without_timestamps() {
+        let output = concat!(
+            "DELUX_STATUS_1\n",
+            "1 2 $0 error\n",
+            "1 2 $0 blocked\n",
+            "1 2 $0 idle\n",
+            "1 2 $1 idle\n",
+            "1 2 $1 working\n",
+            "1 2 $1 error\n",
+            "1 2 $1 done\n",
+            "1 2 $2 idle\n",
+            "DELUX_END\n",
+        );
+        let rows = parse_status(output).unwrap();
+        assert_eq!(rows.len(), 3);
+        for (row, state) in
+            rows.iter()
+                .zip([Some(AgentState::Waiting), Some(AgentState::Error), None])
+        {
+            assert_eq!(
+                row.agent,
+                state.map(|state| AgentStatus { state, since: None })
+            );
+        }
     }
 
     #[test]

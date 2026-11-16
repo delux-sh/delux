@@ -527,6 +527,7 @@ fn show_inventory(out: &mut dyn Write, inventory: &Inventory, separate: bool) {
                 crate::tmux::AgentState::Working => "working",
                 crate::tmux::AgentState::Waiting => "waiting",
                 crate::tmux::AgentState::Done => "done",
+                crate::tmux::AgentState::Error => "error",
             };
             let _ = write!(out, "  {state}");
         }
@@ -881,7 +882,7 @@ mod tests {
     fn inventory_json_includes_agent_status_shape() {
         let mut inventory = Inventory {
             worker: local_worker(),
-            sessions: vec![session(); 4],
+            sessions: vec![session(); 5],
             status: Status::Ready,
             detail: String::new(),
         };
@@ -889,6 +890,7 @@ mod tests {
             crate::tmux::AgentState::Working,
             crate::tmux::AgentState::Waiting,
             crate::tmux::AgentState::Done,
+            crate::tmux::AgentState::Error,
         ]) {
             session.agent = Some(crate::tmux::AgentStatus {
                 state,
@@ -897,7 +899,7 @@ mod tests {
         }
         let value = serde_json::to_value(&inventory).unwrap();
         assert!(value["sessions"][0]["agent"].is_null());
-        for (index, state) in ["working", "waiting", "done"].iter().enumerate() {
+        for (index, state) in ["working", "waiting", "done", "error"].iter().enumerate() {
             assert_eq!(
                 value["sessions"][index + 1]["agent"],
                 serde_json::json!({"state": state, "since": 1700000004}),
@@ -939,6 +941,27 @@ mod tests {
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "local\n  probe-failed: connection refused\n",
+        );
+    }
+
+    #[test]
+    fn human_inventory_shows_agent_error() {
+        let mut failed = session();
+        failed.agent = Some(crate::tmux::AgentStatus {
+            state: crate::tmux::AgentState::Error,
+            since: None,
+        });
+        let inventory = Inventory {
+            worker: local_worker(),
+            sessions: vec![failed],
+            status: Status::Ready,
+            detail: String::new(),
+        };
+        let mut output = Vec::new();
+        show_inventory(&mut output, &inventory, false);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "local\n  work  $7  1 window, detached  error\n",
         );
     }
 

@@ -51,8 +51,9 @@ pub(super) fn action(args: &[&str], payload: &Value) -> Option<Action> {
     };
     match args {
         ["set", "working"] => Some(Action::Set("working")),
-        ["set", "waiting"] => Some(Action::Set("waiting")),
+        ["set", "waiting" | "blocked"] => Some(Action::Set("waiting")),
         ["set", "done"] => Some(Action::Set("done")),
+        ["set", "error"] => Some(Action::Set("error")),
         ["clear"] => Some(Action::Clear),
         ["hook", agent, event] => mapping(agent, event, payload),
         _ => None,

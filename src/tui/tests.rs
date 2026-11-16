@@ -2237,6 +2237,7 @@ fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
         ),
         with_agent(session("$2", "working"), AgentState::Working, Some(NOW)),
         with_agent(session("$3", "done"), AgentState::Done, Some(NOW - 7200)),
+        with_agent(session("$5", "error"), AgentState::Error, None),
         session("$4", "quiet"),
     ];
     let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, sessions)]);
@@ -2256,6 +2257,7 @@ fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
             ),
             ("working", "●", harness.picker.tint.secondary()),
             ("done", "✓", theme::success()),
+            ("error", "✗", theme::error()),
             ("quiet", " ", harness.picker.tint.secondary()),
         ] {
             let y = lines
@@ -2304,10 +2306,13 @@ fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
     );
     harness.press(&["down"]);
     assert!(harness.picker.screen().detail.starts_with("agent done 2h"));
+    harness.press(&["down"]);
+    assert!(harness.picker.screen().detail.starts_with("agent error · "));
     harness.picker.terminal_focused = true;
     let buffer = harness.buffer(120, 30);
     for (state, expected) in [
         (AgentState::Waiting, theme::warning()),
+        (AgentState::Error, theme::error()),
         (AgentState::Working, theme::inactive_sidebar()),
         (AgentState::Done, theme::inactive_sidebar()),
     ] {
@@ -2340,6 +2345,8 @@ fn working_marker_expires_only_without_recent_status_or_output() {
         (AgentState::Working, Some(NOW - 600), 1, true),
         (AgentState::Working, Some(1), NOW, true),
         (AgentState::Waiting, Some(1), 1, true),
+        (AgentState::Error, Some(1), 1, true),
+        (AgentState::Error, None, 1, true),
         (AgentState::Done, None, 1, true),
     ] {
         let mut session = with_agent(session("$1", "work"), state, since);
@@ -2350,10 +2357,10 @@ fn working_marker_expires_only_without_recent_status_or_output() {
         );
         let view = harness.rendered(70, 20);
         assert_eq!(
-            view.contains(if state == AgentState::Done {
-                "✓"
-            } else {
-                "●"
+            view.contains(match state {
+                AgentState::Done => "✓",
+                AgentState::Error => "✗",
+                AgentState::Working | AgentState::Waiting => "●",
             }),
             visible
         );
@@ -2415,6 +2422,27 @@ fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_pre
     let view = harness.rendered(120, 30);
     assert!(view.contains("●  second"));
     assert!(view.contains("1 waiting"));
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(
+            computer,
+            Ok(vec![AgentStatusRow {
+                server_pid: 1,
+                server_start: 1,
+                session_id: "$2".into(),
+                agent: Some(crate::tmux::AgentStatus {
+                    state: AgentState::Error,
+                    since: None,
+                }),
+            }]),
+        )],
+    });
+    assert_eq!(harness.picker.entries[0].sessions()[0].id, "$1");
+    assert_eq!(harness.picker.selection, selection);
+    assert_eq!(harness.effects.borrow().previews, previews);
+    let view = harness.rendered(120, 30);
+    assert!(view.contains("✗  second"));
+    assert!(!view.contains("1 waiting"));
 }
 
 #[test]
@@ -2530,4 +2558,38 @@ fn waiting_sessions_move_first_only_on_reordering_scan() {
     harness.picker.entries[0].update_inventory(ready(&computer, vec![older, newest]), true);
     harness.picker.rebuild();
     assert_eq!(harness.picker.entries[0].sessions()[0].id, "$1");
+}
+
+#[test]
+fn errors_do_not_get_waiting_priority_on_reordering_scans() {
+    let computer = worker("box", "box");
+    let mut working = with_agent(session("$1", "working"), AgentState::Working, None);
+    working.activity = NOW;
+    let error = with_agent(session("$2", "error"), AgentState::Error, None);
+    let mut waiting = with_agent(session("$3", "waiting"), AgentState::Waiting, None);
+    waiting.activity = 1;
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(
+            &computer,
+            vec![error.clone(), working.clone(), waiting.clone()],
+        )],
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            harness.picker.entries[0]
+                .sessions()
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            ["$3", "$1", "$2"],
+        );
+        harness.picker.entries[0].update_inventory(
+            ready(
+                &computer,
+                vec![error.clone(), waiting.clone(), working.clone()],
+            ),
+            true,
+        );
+    }
 }

@@ -61,10 +61,11 @@ impl HookAgent for UserAgent {
 fn state(value: &str) -> Result<Action, String> {
     match value {
         "working" => Ok(Action::Set("working")),
-        "waiting" => Ok(Action::Set("waiting")),
+        "waiting" | "blocked" => Ok(Action::Set("waiting")),
         "done" => Ok(Action::Set("done")),
+        "error" => Ok(Action::Set("error")),
         "clear" => Ok(Action::Clear),
-        _ => Err("event state must be working, waiting, done or clear".into()),
+        _ => Err("event state must be working, waiting, blocked, done, error or clear".into()),
     }
 }
 

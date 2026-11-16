@@ -1,6 +1,10 @@
 # Agent status adapters
 
-Delux shows a session's agent status when something in its tmux pane sets the `@agent_status` option. Built-in integrations wire an agent's own hooks or extension events to that contract.
+Delux shows a session's agent status from OSC 7501 program status on tmux versions that support it (newer than 3.8), or from the pane's `@agent_status` option otherwise. Built-in integrations wire an agent's own hooks or extension events to that option for older tmux and tools that do not emit OSC 7501.
+
+For each pane, a non-empty native status wins when both sources are present, including `idle`, which shows nothing. Delux reads only the program's state, not its name or message.
+
+Native status depends on both sides. tmux records it on its development branch after 3.8; no released tmux does yet. A tool has to emit it inside tmux: Codex and OMP do without being asked, while a tool that first asks the terminal whether it is supported, as Claude Code does, reports only once tmux answers. tmux keeps a status until the program replaces or clears it or the shell prints its next prompt mark, so a tool that exits without clearing can leave `done` showing.
 
 ## The contract
 
@@ -8,10 +12,11 @@ Delux shows a session's agent status when something in its tmux pane sets the `@
 tmux set-option -p -t "$TMUX_PANE" @agent_status "waiting $(date +%s)"
 ```
 
-- The value is `working`, `waiting` or `done`, optionally followed by a space and the Unix time it was set. Anything else is ignored.
-- `waiting` means the agent needs you: a question, an approval, a review.
+- The value is `working`, `waiting` (or `blocked`), `done`, `error` or `idle`, optionally followed by a space and the Unix time it was set. Anything else is ignored.
+- `working`, `done`, `error` and `idle` map directly to OSC 7501 states. The option's `waiting` maps to OSC 7501 `blocked`: the agent needs you for a question, an approval or a review. Delux displays either word as `waiting`.
+- `error` means failed and stopped. `idle` means at rest and shows no status.
 - Clear it with `tmux set-option -p -u -t "$TMUX_PANE" @agent_status`.
-- Set it on the pane the agent runs in. A session shows the most urgent status among its panes: waiting, then working, then done.
+- Set it on the pane the agent runs in. A session shows the most urgent status among its panes: waiting, then error, then working, then done.
 - Include the time. Delux hides `working` once neither the status nor the pane's output has changed for ten minutes, so a crashed agent does not look busy forever.
 
 Any tool that can run a command on its own events can follow this contract.
@@ -19,9 +24,11 @@ Any tool that can run a command on its own events can follow this contract.
 The generic reporter handles timestamps, pane selection and bounded, silent tmux failures:
 
 ```sh
-delux agent-status set working   # or waiting, done
+delux agent-status set working   # or waiting, blocked, done, error
 delux agent-status clear
 ```
+
+The reporter stores `blocked` as `waiting`. Use `clear`, not `set idle`, to remove a reported status.
 
 ## Install built-in reporting
 
@@ -83,7 +90,7 @@ For example, `mytool.json`:
 - `name` is the display name, from 1 to 64 characters.
 - `executable` is optional: a bare file name to look for on `PATH`. The agent is detected when that executable is found or the hooks file's parent directory exists.
 - `file` is required: an absolute path or one beginning with `~/`. Delux edits this hooks JSON file, not the definition.
-- `events` is a non-empty object with at most 32 entries, kept in definition order. Each event name is 1–64 characters without controls. Its value is `working`, `waiting`, `done` or `clear`, or an object with `state` and an optional string `matcher`.
+- `events` is a non-empty object with at most 32 entries, kept in definition order. Each event name is 1–64 characters without controls. Its value is `working`, `waiting`, `blocked`, `done`, `error` or `clear`, or an object with `state` and an optional string `matcher`. `blocked` is normalized to `waiting`.
 - `handler` is optional metadata copied into each command handler. Values must be strings, numbers or booleans; `type` and `command` are reserved. Set timeout units according to the tool's own format.
 
 Definitions are limited to 64 KiB. Unknown top-level fields, invalid definitions and built-in name conflicts are reported without preventing other agents from being processed; they make the command exit non-zero.

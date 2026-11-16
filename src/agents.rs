@@ -192,11 +192,11 @@ const AGENTS: &[Agent] = &[
 pub(crate) fn validate(command: &str, args: &[&str]) -> Result<(), String> {
     if command == "agent-status" {
         return match args {
-            ["set", "working" | "waiting" | "done"] | ["clear"] => Ok(()),
-            ["set", "working" | "waiting" | "done", "--agent", name]
+            ["set", "working" | "waiting" | "blocked" | "done" | "error"] | ["clear"] => Ok(()),
+            ["set", "working" | "waiting" | "blocked" | "done" | "error", "--agent", name]
             | ["clear", "--agent", name] if valid_name(name) => Ok(()),
             ["hook", ..] => Ok(()),
-            _ => Err("usage: delux agent-status set <working|waiting|done> [--agent NAME] | clear [--agent NAME] | hook <agent> <event>; NAME must match [a-z0-9][a-z0-9-]{0,31}".into()),
+            _ => Err("usage: delux agent-status set <working|waiting|blocked|done|error> [--agent NAME] | clear [--agent NAME] | hook <agent> <event>; NAME must match [a-z0-9][a-z0-9-]{0,31}".into()),
         };
     }
     match args {

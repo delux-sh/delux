@@ -142,6 +142,34 @@ fn reporter_bounds_payload_and_constructs_literal_tmux_arguments() {
 }
 
 #[test]
+fn reporter_accepts_states_and_stores_blocked_as_waiting() {
+    for (input, stored) in [
+        ("working", "working"),
+        ("waiting", "waiting"),
+        ("blocked", "waiting"),
+        ("done", "done"),
+        ("error", "error"),
+    ] {
+        let args = ["set", input];
+        assert!(validate("agent-status", &args).is_ok());
+        let action = reporter::action(&args, &Value::Null).unwrap();
+        assert_eq!(action, reporter::Action::Set(stored));
+        assert_eq!(
+            reporter::command(Some("%3"), action, 10).unwrap(),
+            ["tmux", "set-option", "-p", "-t", "%3", "@agent_status"]
+                .map(str::to_owned)
+                .into_iter()
+                .chain([format!("{stored} 10")])
+                .collect::<Vec<_>>(),
+        );
+    }
+    for state in ["idle", "unknown", "Error", "error 1", "blocked\n"] {
+        assert!(validate("agent-status", &["set", state]).is_err());
+        assert_eq!(reporter::action(&["set", state], &Value::Null), None);
+    }
+}
+
+#[test]
 fn installs_missing_and_empty_documents_with_expected_handlers() {
     for agent in AGENTS
         .iter()
