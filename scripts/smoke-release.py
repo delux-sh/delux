@@ -167,7 +167,8 @@ def smoke(executable, version, root):
     picker = None
     try:
         reported_version = run(executable, "--version").stdout.strip()
-        if version is not None and reported_version != f"delux {version}":
+        # Builds from a Git checkout append the commit: "delux 0.1.0 (abc123def)".
+        if version is not None and reported_version.split()[:2] != ["delux", version]:
             raise RuntimeError(f"wrong installed version: {reported_version!r}")
         if inventory():
             raise RuntimeError("private default socket unexpectedly contains sessions before startup")
