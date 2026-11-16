@@ -58,8 +58,24 @@ pub(super) fn update(
         .map_err(|error| format!("create {}: {error}", parent.display()))?;
     let lock = File::open(parent)
         .map_err(|error| format!("open directory {} for locking: {error}", parent.display()))?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-        .map_err(|error| format!("cannot lock directory {} (busy or locking unsupported): {error}; nothing was changed", parent.display()))?;
+    // A busy lock is usually momentary: another Delux run, or a process this
+    // one forked that still holds the inherited descriptor until it execs.
+    // Wait briefly instead of failing, but never hang on a stuck holder.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => break,
+            Err(rustix::io::Errno::WOULDBLOCK) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot lock directory {} (busy or locking unsupported): {error}; nothing was changed",
+                    parent.display()
+                ));
+            }
+        }
+    }
     let original = read(&target)?;
     let replacement = change(original.as_deref())?;
     if original == replacement {
@@ -111,7 +127,7 @@ pub(super) fn update(
     let result = match replacement {
         Some(raw) => atomic_write(&target, parent, raw.as_bytes(), mode),
         // Removing an extension symlink must remove the installed entry, not
-        // leave a dangling link in OMP's extension discovery directory.
+        // leave a dangling link in the tool's extension discovery directory.
         None => {
             fs::remove_file(path).map_err(|error| format!("remove {}: {error}", path.display()))
         }

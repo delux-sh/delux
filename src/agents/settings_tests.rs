@@ -176,33 +176,59 @@ fn installations_leave_only_settings_backups_or_the_extension() {
             [file.to_owned(), format!("{file}.delux-backup")]
         );
     }
-    let root = TempDir::new();
-    let path = root.path().join("delux-agent-status.ts");
-    assert!(update_extension(&path, true).unwrap().backup.is_none());
-    assert_eq!(names(root.path()), ["delux-agent-status.ts"]);
-    fs::write(&path, format!("{OMP_MARKER}\n// old version\n")).unwrap();
-    assert!(update_extension(&path, true).unwrap().backup.is_none());
-    assert_eq!(names(root.path()), ["delux-agent-status.ts"]);
-    assert!(update_extension(&path, false).unwrap().backup.is_none());
-    assert!(names(root.path()).is_empty());
+    for agent in &AGENTS[2..] {
+        let Integration::Extension { file, adapter } = agent.integration else {
+            unreachable!()
+        };
+        let root = TempDir::new();
+        let filename = Path::new(file).file_name().unwrap().to_str().unwrap();
+        let path = root.path().join(filename);
+        assert!(
+            update_extension(&path, adapter, true)
+                .unwrap()
+                .backup
+                .is_none()
+        );
+        assert_eq!(names(root.path()), [filename]);
+        fs::write(&path, format!("{ADAPTER_MARKER}\n// old version\n")).unwrap();
+        assert!(
+            update_extension(&path, adapter, true)
+                .unwrap()
+                .backup
+                .is_none()
+        );
+        assert_eq!(names(root.path()), [filename]);
+        assert!(
+            update_extension(&path, adapter, false)
+                .unwrap()
+                .backup
+                .is_none()
+        );
+        assert!(names(root.path()).is_empty());
+    }
 }
 
 #[test]
 fn uninstalling_an_extension_symlink_leaves_no_discovery_entry() {
-    let root = TempDir::new();
-    let extensions = root.path().join("extensions");
-    fs::create_dir(&extensions).unwrap();
-    let target = root.path().join("source.ts");
-    fs::write(&target, OMP_ADAPTER).unwrap();
-    let link = extensions.join("delux-agent-status.ts");
-    std::os::unix::fs::symlink(&target, &link).unwrap();
-    assert!(update_extension(&link, false).unwrap().changed);
-    assert!(names(&extensions).is_empty());
-    assert_eq!(fs::read_to_string(target).unwrap(), OMP_ADAPTER);
+    for agent in &AGENTS[2..] {
+        let Integration::Extension { file, adapter } = agent.integration else {
+            unreachable!()
+        };
+        let root = TempDir::new();
+        let extensions = root.path().join("extensions");
+        fs::create_dir(&extensions).unwrap();
+        let target = root.path().join("source");
+        fs::write(&target, adapter).unwrap();
+        let link = extensions.join(Path::new(file).file_name().unwrap());
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(update_extension(&link, adapter, false).unwrap().changed);
+        assert!(names(&extensions).is_empty());
+        assert_eq!(fs::read_to_string(target).unwrap(), adapter);
+    }
 }
 
 #[test]
-fn busy_directory_fails_without_waiting_or_creating_sidecars() {
+fn directory_that_stays_busy_fails_after_a_bounded_wait_without_sidecars() {
     let root = TempDir::new();
     let lock = fs::File::open(root.path()).unwrap();
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
@@ -283,7 +309,7 @@ fn output_is_quiet_on_noop_and_mentions_backups_only_when_created() {
     assert_eq!(output.matches("Restart already-running").count(), 1);
     let (result, output) = invoke(&context, &["install"]);
     assert_eq!(result, Ok(0));
-    assert_eq!(output.lines().count(), 3);
+    assert_eq!(output.lines().count(), AGENTS.len());
     assert!(
         output
             .lines()
@@ -291,7 +317,7 @@ fn output_is_quiet_on_noop_and_mentions_backups_only_when_created() {
     );
     let (result, output) = invoke(&context, &["uninstall"]);
     assert_eq!(result, Ok(0));
-    assert_eq!(output.lines().count(), 3);
+    assert_eq!(output.lines().count(), AGENTS.len());
     assert!(!output.contains("Backup:"));
     assert!(names(context.file(2).parent().unwrap()).is_empty());
 }
@@ -316,7 +342,7 @@ fn failures_are_returned_after_remaining_agents_are_processed() {
                 if install { "install" } else { "uninstall" },
                 "claude",
                 "codex",
-                "omp",
+                "opencode",
             ],
         );
         let mut errors = Vec::new();
@@ -357,7 +383,7 @@ fn failures_are_returned_after_remaining_agents_are_processed() {
     assert!(
         crate::options::parse_options(&args)
             .unwrap_err()
-            .contains("valid names: claude, codex, omp")
+            .contains("valid names: claude, codex, opencode, pi, omp")
     );
     assert_eq!(
         crate::app::run(args.into_iter().map(Into::into).collect()),

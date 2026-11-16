@@ -1,4 +1,7 @@
+#[cfg(test)]
+mod extension_tests;
 mod json;
+mod paths;
 mod reporter;
 mod settings;
 mod storage;
@@ -8,16 +11,19 @@ mod settings_tests;
 #[cfg(test)]
 mod tests;
 
-use std::ffi::{OsStr, OsString};
+#[cfg(test)]
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::display::display;
 
+#[cfg(test)]
+use paths::handler_executable;
+use paths::{Context, Directory};
 pub(crate) use reporter::report;
 
-const OMP_MARKER: &str = "// delux-agent-status adapter. Installed by `delux agents install`; reinstalling replaces this file.";
-const OMP_ADAPTER: &str = include_str!("../adapters/omp/delux-agent-status.ts");
+const ADAPTER_MARKER: &str = "// delux-agent-status adapter. Installed by `delux agents install`; reinstalling replaces this file.";
 
 struct Event {
     name: &'static str,
@@ -36,7 +42,10 @@ enum Integration {
         file: &'static str,
         events: &'static [Event],
     },
-    Extension,
+    Extension {
+        file: &'static str,
+        adapter: &'static str,
+    },
 }
 
 struct Agent {
@@ -44,7 +53,8 @@ struct Agent {
     display: &'static str,
     executable: &'static str,
     config_env: Option<&'static str>,
-    directory: &'static str,
+    directory: Directory,
+    detect_fallback_parent: bool,
     integration: Integration,
 }
 
@@ -55,7 +65,8 @@ const AGENTS: &[Agent] = &[
         display: "Claude Code",
         executable: "claude",
         config_env: Some("CLAUDE_CONFIG_DIR"),
-        directory: ".claude",
+        directory: Directory::Home(".claude"),
+        detect_fallback_parent: false,
         integration: Integration::Hooks {
             file: "settings.json",
             events: &[
@@ -85,7 +96,8 @@ const AGENTS: &[Agent] = &[
         display: "Codex",
         executable: "codex",
         config_env: Some("CODEX_HOME"),
-        directory: ".codex",
+        directory: Directory::Home(".codex"),
+        detect_fallback_parent: false,
         integration: Integration::Hooks {
             file: "hooks.json",
             events: &[
@@ -100,12 +112,48 @@ const AGENTS: &[Agent] = &[
         },
     },
     Agent {
+        name: "opencode",
+        display: "OpenCode",
+        executable: "opencode",
+        config_env: Some("OPENCODE_CONFIG_DIR"),
+        directory: Directory::Config {
+            variable: "XDG_CONFIG_HOME",
+            default: ".config",
+            suffix: "opencode",
+        },
+        detect_fallback_parent: false,
+        integration: Integration::Extension {
+            file: "plugins/delux-agent-status.js",
+            adapter: include_str!("../adapters/opencode/delux-agent-status.js"),
+        },
+    },
+    Agent {
+        name: "pi",
+        display: "Pi",
+        executable: "pi",
+        config_env: Some("PI_CODING_AGENT_DIR"),
+        directory: Directory::Home(".pi/agent"),
+        detect_fallback_parent: false,
+        integration: Integration::Extension {
+            file: "extensions/delux-agent-status.ts",
+            adapter: include_str!("../adapters/pi/delux-agent-status.ts"),
+        },
+    },
+    Agent {
         name: "omp",
         display: "OMP",
         executable: "omp",
         config_env: Some("PI_CODING_AGENT_DIR"),
-        directory: ".omp/agent",
-        integration: Integration::Extension,
+        directory: Directory::HomeVariable {
+            variable: "PI_CONFIG_DIR",
+            default: ".omp",
+            suffix: "agent",
+        },
+        detect_fallback_parent: true,
+        integration: Integration::Extension {
+            file: "extensions/delux-agent-status.ts",
+            adapter: include_str!("../adapters/pi/delux-agent-status.ts"),
+        },
     },
 ];
 
@@ -138,114 +186,6 @@ pub(crate) fn validate(command: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-struct Context {
-    directories: Vec<PathBuf>,
-    path: OsString,
-    executable: PathBuf,
-    omp_root_detection: bool,
-}
-
-impl Context {
-    fn from_inputs(
-        home: Option<OsString>,
-        path: OsString,
-        executable: PathBuf,
-        variable: impl Fn(&str) -> Option<OsString>,
-    ) -> Result<Self, String> {
-        let omp_root_detection =
-            variable("PI_CODING_AGENT_DIR").is_none_or(|value| value.is_empty());
-        let directories = AGENTS
-            .iter()
-            .map(|agent| {
-                if let Some(value) = agent
-                    .config_env
-                    .and_then(&variable)
-                    .filter(|value| !value.is_empty())
-                {
-                    return Ok(PathBuf::from(value));
-                }
-                if matches!(agent.integration, Integration::Extension) {
-                    let config = variable("PI_CONFIG_DIR")
-                        .filter(|value| !value.is_empty())
-                        .unwrap_or_else(|| ".omp".into());
-                    return home
-                        .as_ref()
-                        .filter(|home| !home.is_empty())
-                        .map(|home| PathBuf::from(home).join(config).join("agent"))
-                        .ok_or_else(|| "$HOME is not defined".to_owned());
-                }
-                home.as_ref()
-                    .filter(|home| !home.is_empty())
-                    .map(|home| PathBuf::from(home).join(agent.directory))
-                    .ok_or_else(|| "$HOME is not defined".to_owned())
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            directories,
-            path,
-            executable,
-            omp_root_detection,
-        })
-    }
-
-    fn environment() -> Result<Self, String> {
-        Self::from_inputs(
-            std::env::var_os("HOME"),
-            std::env::var_os("PATH").unwrap_or_default(),
-            std::env::current_exe()
-                .map_err(|error| format!("locate running executable: {error}"))?,
-            |name| std::env::var_os(name),
-        )
-    }
-
-    fn found(&self, index: usize) -> bool {
-        self.directories[index].is_dir()
-            || (matches!(AGENTS[index].integration, Integration::Extension)
-                && self.omp_root_detection
-                && self.directories[index].parent().is_some_and(Path::is_dir))
-            || executable_on_path(&self.path, AGENTS[index].executable).is_some()
-    }
-
-    fn file(&self, index: usize) -> PathBuf {
-        self.directories[index].join(match AGENTS[index].integration {
-            Integration::Hooks { file, .. } => file,
-            Integration::Extension => "extensions/delux-agent-status.ts",
-        })
-    }
-
-    fn command(&self) -> Result<String, String> {
-        handler_executable(
-            &self.executable,
-            executable_on_path(&self.path, "delux").as_deref(),
-        )
-    }
-}
-
-fn executable_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .map(|directory| directory.join(name))
-        .find(|candidate| {
-            candidate.is_file()
-                && rustix::fs::access(candidate, rustix::fs::Access::EXEC_OK).is_ok()
-        })
-}
-
-fn handler_executable(executable: &Path, on_path: Option<&Path>) -> Result<String, String> {
-    if let Some(on_path) = on_path
-        && let (Ok(current), Ok(found)) = (executable.canonicalize(), on_path.canonicalize())
-        && current == found
-    {
-        return Ok("delux".into());
-    }
-    if !executable.is_absolute() {
-        return Err("running executable path is not absolute".into());
-    }
-    let executable = executable
-        .to_str()
-        .ok_or("running executable path is not valid UTF-8")?;
-    Ok(format!("'{}'", executable.replace('\'', "'\\''")))
-}
-
 pub(crate) fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let result = Context::environment().and_then(|context| run_in(&context, args, out));
     finish(result, err)
@@ -268,12 +208,36 @@ fn run_in(context: &Context, args: &[String], out: &mut dyn Write) -> Result<i32
     let mut selected = 0;
     let mut changed_any = false;
     let mut errors = Vec::new();
+    let mut extension_updates: Vec<(PathBuf, bool)> = Vec::new();
     for (index, agent) in AGENTS.iter().enumerate() {
         if !names.is_empty() && !names.iter().any(|name| name == agent.name) {
             continue;
         }
         let found = context.found(index);
         let path = context.file(index);
+        let extension = matches!(agent.integration, Integration::Extension { .. });
+        if extension
+            && names.iter().any(|name| name == agent.name)
+            && let Some((_, shared)) =
+                AGENTS[..index]
+                    .iter()
+                    .enumerate()
+                    .find(|(previous, other)| {
+                        matches!(other.integration, Integration::Extension { .. })
+                            && names.iter().any(|name| name == other.name)
+                            && context.file(*previous) == path
+                    })
+        {
+            let _ = writeln!(
+                out,
+                "{} and {} share one adapter; uninstalling either removes it for both.",
+                shared.display, agent.display
+            );
+        }
+        let previous_update = extension_updates
+            .iter()
+            .find(|(previous, _)| extension && previous == &path)
+            .map(|(_, changed)| *changed);
         let result = (|| {
             if operation != "status" && !names.is_empty() && !found {
                 return Err(format!(
@@ -298,14 +262,28 @@ fn run_in(context: &Context, args: &[String], out: &mut dyn Write) -> Result<i32
                 );
                 return Ok(());
             }
-            if operation == "uninstall" && names.is_empty() && status == "not installed" {
+            if operation == "uninstall"
+                && names.is_empty()
+                && status == "not installed"
+                && previous_update.is_none()
+            {
                 return Ok(());
             }
             selected += 1;
             let install = operation == "install";
             let update = match agent.integration {
                 Integration::Hooks { .. } => settings::update(agent, &path, &command, install)?,
-                Integration::Extension => update_extension(&path, install)?,
+                Integration::Extension { adapter, .. } => match previous_update {
+                    Some(changed) => storage::Update {
+                        changed,
+                        backup: None,
+                    },
+                    None => {
+                        let update = update_extension(&path, adapter, install)?;
+                        extension_updates.push((path.clone(), update.changed));
+                        update
+                    }
+                },
             };
             changed_any |= update.changed;
             let message = match (install, update.changed) {
@@ -384,8 +362,8 @@ fn run_in(context: &Context, args: &[String], out: &mut dyn Write) -> Result<i32
 fn reporting_status(agent: &Agent, path: &Path, command: &str) -> Result<&'static str, String> {
     match agent.integration {
         Integration::Hooks { .. } => settings::status(agent, path, command),
-        Integration::Extension => Ok(match storage::read(path)? {
-            Some(raw) if marked(&raw) && raw == OMP_ADAPTER => "installed",
+        Integration::Extension { adapter, .. } => Ok(match storage::read(path)? {
+            Some(raw) if marked(&raw) && raw == adapter => "installed",
             Some(raw) if marked(&raw) => "installed (update available)",
             _ => "not installed",
         }),
@@ -393,10 +371,10 @@ fn reporting_status(agent: &Agent, path: &Path, command: &str) -> Result<&'stati
 }
 
 fn marked(raw: &str) -> bool {
-    raw.lines().next() == Some(OMP_MARKER)
+    raw.lines().next() == Some(ADAPTER_MARKER)
 }
 
-fn update_extension(path: &Path, install: bool) -> Result<storage::Update, String> {
+fn update_extension(path: &Path, adapter: &str, install: bool) -> Result<storage::Update, String> {
     storage::update(path, false, |raw| {
         if raw.is_some_and(|raw| !marked(raw)) {
             return Err(format!(
@@ -405,7 +383,7 @@ fn update_extension(path: &Path, install: bool) -> Result<storage::Update, Strin
             ));
         }
         Ok(if install {
-            Some(OMP_ADAPTER.to_owned())
+            Some(adapter.to_owned())
         } else {
             None
         })

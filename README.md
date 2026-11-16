@@ -85,9 +85,11 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 Run this on each computer where agents run inside tmux:
 
 ```sh
-delux agents install          # wire detected Claude Code, Codex and OMP installations
+delux agents install          # wire detected Claude Code, Codex, OpenCode, Pi and OMP
 delux agents                  # show what is found and wired
 ```
+
+Pi and OMP share one adapter; if `PI_CODING_AGENT_DIR` points them at the same directory, uninstalling either removes reporting for both.
 
 For Codex, open Codex and run `/hooks` once to trust the new hooks. Restart agent sessions that were already running. Use `delux agents install NAME` to select a tool, or `delux agents uninstall [NAME...]` to remove Delux reporting.
 

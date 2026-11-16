@@ -363,40 +363,48 @@ fn backups_are_created_once_modes_survive_and_links_are_preserved() {
 }
 
 #[test]
-fn omp_requires_its_marker_and_reports_updates() {
-    let root = TempDir::new();
-    let path = root.path().join("adapter.ts");
-    assert_eq!(OMP_ADAPTER.lines().next(), Some(OMP_MARKER));
-    for raw in ["user code".to_owned(), format!("// header\n{OMP_MARKER}\n")] {
-        fs::write(&path, &raw).unwrap();
+fn extensions_require_their_marker_and_report_updates() {
+    for agent in &AGENTS[2..] {
+        let Integration::Extension { file, adapter } = agent.integration else {
+            unreachable!()
+        };
+        let root = TempDir::new();
+        let path = root.path().join(Path::new(file).file_name().unwrap());
+        assert_eq!(adapter.lines().next(), Some(ADAPTER_MARKER));
+        for raw in [
+            "user code".to_owned(),
+            format!("// header\n{ADAPTER_MARKER}\n"),
+        ] {
+            fs::write(&path, &raw).unwrap();
+            assert_eq!(
+                reporting_status(agent, &path, "delux").unwrap(),
+                "not installed"
+            );
+            assert!(
+                update_extension(&path, adapter, true)
+                    .unwrap_err()
+                    .contains("refusing")
+            );
+            assert!(update_extension(&path, adapter, false).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        }
+        fs::write(&path, format!("{ADAPTER_MARKER}\n// old adapter\n")).unwrap();
         assert_eq!(
-            reporting_status(&AGENTS[2], &path, "delux").unwrap(),
-            "not installed"
+            reporting_status(agent, &path, "delux").unwrap(),
+            "installed (update available)"
         );
-        assert!(
-            update_extension(&path, true)
-                .unwrap_err()
-                .contains("refusing")
+        assert!(update_extension(&path, adapter, true).unwrap().changed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), adapter);
+        assert!(!update_extension(&path, adapter, true).unwrap().changed);
+        assert_eq!(
+            reporting_status(agent, &path, "delux").unwrap(),
+            "installed"
         );
-        assert!(update_extension(&path, false).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert!(update_extension(&path, adapter, false).unwrap().changed);
+        assert!(!path.exists());
+        assert!(!update_extension(&path, adapter, false).unwrap().changed);
+        assert!(update_extension(&path, adapter, true).unwrap().changed);
     }
-    fs::write(&path, format!("{OMP_MARKER}\n// old adapter\n")).unwrap();
-    assert_eq!(
-        reporting_status(&AGENTS[2], &path, "delux").unwrap(),
-        "installed (update available)"
-    );
-    assert!(update_extension(&path, true).unwrap().changed);
-    assert_eq!(fs::read_to_string(&path).unwrap(), OMP_ADAPTER);
-    assert!(!update_extension(&path, true).unwrap().changed);
-    assert_eq!(
-        reporting_status(&AGENTS[2], &path, "delux").unwrap(),
-        "installed"
-    );
-    assert!(update_extension(&path, false).unwrap().changed);
-    assert!(!path.exists());
-    assert!(!update_extension(&path, false).unwrap().changed);
-    assert!(update_extension(&path, true).unwrap().changed);
 }
 
 #[test]
@@ -428,13 +436,13 @@ fn all_environment_paths_are_injected_including_omp_overrides() {
     assert_eq!(default.file(0), root.path().join(".claude/settings.json"));
     assert_eq!(default.file(1), root.path().join(".codex/hooks.json"));
     assert_eq!(
-        default.file(2),
+        default.file(4),
         root.path()
             .join(".omp/agent/extensions/delux-agent-status.ts")
     );
     fs::create_dir(root.path().join(".omp")).unwrap();
     assert!(
-        default.found(2),
+        default.found(4),
         "the fallback config root is enough to detect OMP"
     );
     let custom = |variables: &[(&str, &str)]| {
@@ -460,11 +468,11 @@ fn all_environment_paths_are_injected_including_omp_overrides() {
     assert_eq!(directories.file(0), Path::new("/fake/claude/settings.json"));
     assert_eq!(directories.file(1), Path::new("/fake/codex/hooks.json"));
     assert_eq!(
-        directories.file(2),
+        directories.file(4),
         Path::new("/fake/omp/extensions/delux-agent-status.ts")
     );
     assert_eq!(
-        custom(&[("PI_CONFIG_DIR", ".custom")]).file(2),
+        custom(&[("PI_CONFIG_DIR", ".custom")]).file(4),
         root.path()
             .join(".custom/agent/extensions/delux-agent-status.ts")
     );
@@ -565,7 +573,7 @@ fn argument_parsing_has_no_discovery_or_home_dependencies() {
         assert!(parse(&args).is_err(), "{args:?}");
     }
     let error = parse(&["agents", "install", "unknown"]).unwrap_err();
-    assert!(error.contains("claude, codex, omp"));
+    assert!(error.contains("claude, codex, opencode, pi, omp"));
     for flags in [
         vec!["--host", "example"],
         vec!["--local"],
