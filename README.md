@@ -84,6 +84,8 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 
 Press `a` in the list to add an SSH destination such as `alice@build-box` or an alias from `~/.ssh/config`. Enter saves it to `hosts` in the active `cli.json` (including a custom `--config` path), using the destination as both its name and value, just like `--host DEST`. Esc cancels. Delux rescans without reordering existing computers and selects the new computer; adding only probes in the background, never opens an interactive SSH connection. Duplicate names or destinations are rejected. This action is unavailable with `--local` or `--host`, which exclude other configured hosts; restart without those flags to add computers. `--no-local` still allows it.
 
+Duplicate checks include saved computers hidden by `ignore` and mappings saved by another running picker; adding never overwrites an existing mapping.
+
 **New session:** press `n`, or Enter on a ready computer with no sessions. Choose a name, a directory (`~`, `~/path`, or an absolute path), and optionally a command such as `omp`, `claude`, or `codex`. Blank starts the normal shell; a command must be installed on that computer and may end the session when it exits. Tab changes fields; Enter creates and attaches; Esc, Ctrl-C, or Shift-Tab cancels. Sign in first if needed.
 
 ### Agent status

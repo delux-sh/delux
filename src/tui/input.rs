@@ -391,7 +391,7 @@ impl Picker {
                     return None;
                 }
                 // Like --host DEST, the destination itself is the computer's name.
-                if let Err(error) = (self.services.save_mapping)(text, text) {
+                if let Err(error) = (self.services.add_mapping)(text, text) {
                     self.notice = format!("Could not save cli.json: {}", display(&error, 400));
                     return None;
                 }

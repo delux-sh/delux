@@ -97,6 +97,7 @@ impl Harness {
     ) -> Self {
         let effects = Rc::new(RefCell::new(Effects::default()));
         let (mappings, states) = (effects.clone(), effects.clone());
+        let additions = effects.clone();
         let mut saved_state = state.as_ref().cloned().unwrap_or_default();
         let services = Services {
             discover: Arc::new(move |_| Ok((workers.clone(), String::new()))),
@@ -122,6 +123,13 @@ impl Harness {
             sharing_active: Box::new(|_| true),
             save_mapping: Box::new(move |name, destination| {
                 mappings
+                    .borrow_mut()
+                    .mappings
+                    .push((name.into(), destination.into()));
+                Ok(())
+            }),
+            add_mapping: Box::new(move |name, destination| {
+                additions
                     .borrow_mut()
                     .mappings
                     .push((name.into(), destination.into()));
@@ -1969,8 +1977,8 @@ fn adding_saves_mapping_rescans_without_reordering_and_selects_new_computer() {
         );
         let saved_path = path.clone();
         let effects = harness.effects.clone();
-        harness.picker.services.save_mapping = Box::new(move |name, destination| {
-            save_host_mapping(&saved_path, name, destination)?;
+        harness.picker.services.add_mapping = Box::new(move |name, destination| {
+            crate::workers::add_host_mapping(&saved_path, name, destination)?;
             effects
                 .borrow_mut()
                 .mappings
@@ -2143,7 +2151,7 @@ fn add_computer_save_failure_keeps_input_and_list_unchanged() {
     let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
     let selection = harness.picker.selection.clone();
     let generation = harness.picker.generation;
-    harness.picker.services.save_mapping = Box::new(|_, _| Err("read-only config".into()));
+    harness.picker.services.add_mapping = Box::new(|_, _| Err("read-only config".into()));
     harness.press(&["a", "new-box", "enter"]);
     assert!(
         harness

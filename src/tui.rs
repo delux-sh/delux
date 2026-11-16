@@ -62,6 +62,7 @@ struct Services {
     resolve_user: ResolveUser,
     sharing_active: Box<dyn Fn(&str) -> bool>,
     save_mapping: SaveMapping,
+    add_mapping: SaveMapping,
     add_computer_unavailable: Option<&'static str>,
     update_state: UpdateState,
     /// Unix seconds, for activity ages.
