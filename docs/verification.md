@@ -1,5 +1,21 @@
 # Verification record
 
+## iPhone companion (November 16, 2026)
+
+A real OMP agent's recognized `touch IOS_AGENT_APPROVED` approval was displayed and accepted through the iPhone terminal. The UI scenario passed; the isolated server contained the marker and OMP displayed `DONE`. All three fixture tmux sessions survived the app's test runs. The fixture SSH server, temporary keys, agent sessions and smoke harness were then removed; screenshots are retained outside the source tree.
+
+The native SwiftUI/SwiftTerm app built with Xcode 26.4.1 and passed all 10 canonical tests on an iPhone 17 Pro simulator running iOS 26.4.1. Tests cover framed tmux data, status priority and expiry, creation identity, rejected input, configuration write failures, cross-computer terminal isolation, and real Keychain credential isolation. Simulator signing remains enabled: an unsigned build correctly failed Keychain access rather than falling back to insecure storage.
+
+An isolated loopback OpenSSH server and real tmux sessions exercised generated-key authentication, exact host-fingerprint verification, session inventory, terminal input (confirmed by a remote marker file), background/foreground reattachment, and creation in a chosen directory. `localhost` resolved to both IPv6 and IPv4 while sshd listened only on IPv4, exercising address fallback. The first lifecycle harness passed through reconnect but failed to locate a menu by an inherited accessibility identifier; the corrected user-facing selector passed the creation scenario separately.
+
+Review fixes include binding authentication to the winning TCP connection rather than every Happy Eyeballs attempt; persisting configuration before changing UI state; rejecting stale trust/refresh results; retaining a trust prompt after a failed write; keeping unrelated terminal connections unchanged during edits; and preventing dismissal while creation is uncertain. No remote helper, fake terminal, mocked SSH backend or production test backdoor is used.
+
+No physical iPhone was connected. Device signing, physical lock/resume, cellular/Tailscale transitions and App Store/TestFlight distribution are not verified. This is a source-build companion, not a published mobile release.
+
+## Reviewed feature integration (November 16, 2026)
+
+Admin-squash merged [#11](https://github.com/delux-sh/delux/pull/11) as `a741d9d`, then [#12](https://github.com/delux-sh/delux/pull/12) as `e3cfc02`, then [#13](https://github.com/delux-sh/delux/pull/13) as `460b0d6`, each after its exact reviewed head passed Linux/macOS CI, Rust 1.88 and DCO checks. The final add-computer branch passed 265 local tests, Clippy, minimum-Rust checking and a release build. Its isolated picker scenario confirmed hidden-duplicate refusal and saving a new computer without replacing existing mappings. No release or Homebrew publication was performed.
+
 ## Explicit session creation
 
 Pre-merge November 16: rebased onto agent-status integration `a741d9d`. Clippy, Rust 1.88 all-target checking and the release build passed. The suite passed 255 tests; one new regression assumed discovery order instead of selecting the target by key. After correcting that assumption, the regression passed. Full CI remains the merge gate.

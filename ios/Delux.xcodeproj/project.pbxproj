@@ -1,0 +1,607 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1EDDDB1D24C441E25913EBDE /* TerminalSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC79CDF60125466FBAF67DA7 /* TerminalSessionController.swift */; };
+		3048ECF91CAC405A6E9921E1 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D98F75830D7E7529BBB68F /* AppModelTests.swift */; };
+		3BF450884832CB8437EC236D /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DDE055A8F9685A8BF1FEEEE /* AppModel.swift */; };
+		3EAAC859513A6D37A74EF485 /* TmuxProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = D136AFCF738636A9642D8553 /* TmuxProtocol.swift */; };
+		493E9A793F1732EAD25785A9 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = C85F9130070FE84D7DDAD3D1 /* NIOCore */; };
+		635420C12692FF98EFC2CB14 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03753001EC8386464D8C4564 /* Theme.swift */; };
+		63958B76C1774333EEB37025 /* CredentialStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27298C9DDDD405B397E1573 /* CredentialStoreTests.swift */; };
+		68178CD2B67C53D5E3EB35DC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E33EDC7A10A772EF65252DAA /* Models.swift */; };
+		78F9CCBC3E0CA648D2AEC12B /* TerminalHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6E782E45ABBB04A176AB2B4 /* TerminalHostView.swift */; };
+		8165A83B3028EFE91C7A729A /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 706AB61E6F273C85F0987068 /* Crypto */; };
+		83AE33C5C2C4B50A9A05DF34 /* SSHTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00FF993B93F1FE5A3CEDAC3E /* SSHTransport.swift */; };
+		8647DE083EDE94D1FBC74D8C /* DeluxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49941859E6BA9D768910109E /* DeluxApp.swift */; };
+		8D71776C78D328A5E88E7704 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 4569A7EF8C1BD9B585AB36C0 /* SwiftTerm */; };
+		903A8E0A62DD6D27D8BC74B3 /* TmuxProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB35C6CC329B1AF32CEA34C7 /* TmuxProtocolTests.swift */; };
+		9D3B31C92D9B66C7AA08628B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4E6FAB8EBFFEE63CAECB1325 /* Assets.xcassets */; };
+		A56B9B7E7A9FEED18C026238 /* NewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABABEEA92E7C11EEA34B3A66 /* NewSessionView.swift */; };
+		ABA033879193223DBDD7480F /* HostKeyPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C27A10D4B5C12CF169E0E3CF /* HostKeyPromptView.swift */; };
+		B6A923F8BBF95C5AB89FCBD2 /* ComputerFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D29427B2D762BBE59AC2A26 /* ComputerFormView.swift */; };
+		BBC5DB8FBC325237682B4917 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2E97906B1D1C5537D01DCFF /* NIOPosix */; };
+		CAC1A99299397333034F5F94 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 371A85437D30A1C6B3864205 /* CredentialStore.swift */; };
+		E4B623B4CBF5B60970BE87EF /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3487EAAEAA73E91E70593CC /* DashboardView.swift */; };
+		F6CDEF1E351A89C5731B87CD /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 1B2BDE7CF64400782E27C6DE /* NIOSSH */; };
+		F73A8A4CD17E0F4FBED3387A /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = E34CB2E75C4867068EC943D9 /* TerminalScreen.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		67793CC037E76FCA44A5401E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 14971AB92472084E0774E362 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 41EB604E042CF12749281FE9;
+			remoteInfo = Delux;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		00FF993B93F1FE5A3CEDAC3E /* SSHTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTransport.swift; sourceTree = "<group>"; };
+		03753001EC8386464D8C4564 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		2D29427B2D762BBE59AC2A26 /* ComputerFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerFormView.swift; sourceTree = "<group>"; };
+		371A85437D30A1C6B3864205 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
+		3DDE055A8F9685A8BF1FEEEE /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		49941859E6BA9D768910109E /* DeluxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeluxApp.swift; sourceTree = "<group>"; };
+		4E6FAB8EBFFEE63CAECB1325 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		8EB3C098240BC0D8D1EA8251 /* DeluxTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DeluxTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A27298C9DDDD405B397E1573 /* CredentialStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStoreTests.swift; sourceTree = "<group>"; };
+		ABABEEA92E7C11EEA34B3A66 /* NewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionView.swift; sourceTree = "<group>"; };
+		B6E782E45ABBB04A176AB2B4 /* TerminalHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHostView.swift; sourceTree = "<group>"; };
+		C27A10D4B5C12CF169E0E3CF /* HostKeyPromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyPromptView.swift; sourceTree = "<group>"; };
+		D136AFCF738636A9642D8553 /* TmuxProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxProtocol.swift; sourceTree = "<group>"; };
+		D3487EAAEAA73E91E70593CC /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		DB35C6CC329B1AF32CEA34C7 /* TmuxProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxProtocolTests.swift; sourceTree = "<group>"; };
+		E2D98F75830D7E7529BBB68F /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
+		E33EDC7A10A772EF65252DAA /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		E34CB2E75C4867068EC943D9 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
+		EB48651D3268EA0767DDBD94 /* Delux.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Delux.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC79CDF60125466FBAF67DA7 /* TerminalSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionController.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1AAC804896F1E4F60F9E9092 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F6CDEF1E351A89C5731B87CD /* NIOSSH in Frameworks */,
+				493E9A793F1732EAD25785A9 /* NIOCore in Frameworks */,
+				BBC5DB8FBC325237682B4917 /* NIOPosix in Frameworks */,
+				8165A83B3028EFE91C7A729A /* Crypto in Frameworks */,
+				8D71776C78D328A5E88E7704 /* SwiftTerm in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		263F9C48E5E73CCDF8A65F5F /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				B6E782E45ABBB04A176AB2B4 /* TerminalHostView.swift */,
+				EC79CDF60125466FBAF67DA7 /* TerminalSessionController.swift */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
+		2FF061A8529EBE6B0FB33C27 = {
+			isa = PBXGroup;
+			children = (
+				7157685E5E81DCA9F30B5DFA /* Delux */,
+				8F3E16BB7AFFC04C7535ED2E /* DeluxTests */,
+				58BE59C57123353C5865DD2E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		58BE59C57123353C5865DD2E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				EB48651D3268EA0767DDBD94 /* Delux.app */,
+				8EB3C098240BC0D8D1EA8251 /* DeluxTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		7157685E5E81DCA9F30B5DFA /* Delux */ = {
+			isa = PBXGroup;
+			children = (
+				3DDE055A8F9685A8BF1FEEEE /* AppModel.swift */,
+				4E6FAB8EBFFEE63CAECB1325 /* Assets.xcassets */,
+				371A85437D30A1C6B3864205 /* CredentialStore.swift */,
+				49941859E6BA9D768910109E /* DeluxApp.swift */,
+				E33EDC7A10A772EF65252DAA /* Models.swift */,
+				00FF993B93F1FE5A3CEDAC3E /* SSHTransport.swift */,
+				03753001EC8386464D8C4564 /* Theme.swift */,
+				D136AFCF738636A9642D8553 /* TmuxProtocol.swift */,
+				263F9C48E5E73CCDF8A65F5F /* Terminal */,
+				EBA4AE3AFCE7F090A37831D0 /* Views */,
+			);
+			path = Delux;
+			sourceTree = "<group>";
+		};
+		8F3E16BB7AFFC04C7535ED2E /* DeluxTests */ = {
+			isa = PBXGroup;
+			children = (
+				E2D98F75830D7E7529BBB68F /* AppModelTests.swift */,
+				A27298C9DDDD405B397E1573 /* CredentialStoreTests.swift */,
+				DB35C6CC329B1AF32CEA34C7 /* TmuxProtocolTests.swift */,
+			);
+			path = DeluxTests;
+			sourceTree = "<group>";
+		};
+		EBA4AE3AFCE7F090A37831D0 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				2D29427B2D762BBE59AC2A26 /* ComputerFormView.swift */,
+				D3487EAAEAA73E91E70593CC /* DashboardView.swift */,
+				C27A10D4B5C12CF169E0E3CF /* HostKeyPromptView.swift */,
+				ABABEEA92E7C11EEA34B3A66 /* NewSessionView.swift */,
+				E34CB2E75C4867068EC943D9 /* TerminalScreen.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		41EB604E042CF12749281FE9 /* Delux */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = ADBD0236795B26CAE8C01E7C /* Build configuration list for PBXNativeTarget "Delux" */;
+			buildPhases = (
+				9A1476B47B838228BD656054 /* Sources */,
+				C5345A0BE2347B3C4B4E4465 /* Resources */,
+				1AAC804896F1E4F60F9E9092 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Delux;
+			packageProductDependencies = (
+				1B2BDE7CF64400782E27C6DE /* NIOSSH */,
+				C85F9130070FE84D7DDAD3D1 /* NIOCore */,
+				D2E97906B1D1C5537D01DCFF /* NIOPosix */,
+				706AB61E6F273C85F0987068 /* Crypto */,
+				4569A7EF8C1BD9B585AB36C0 /* SwiftTerm */,
+			);
+			productName = Delux;
+			productReference = EB48651D3268EA0767DDBD94 /* Delux.app */;
+			productType = "com.apple.product-type.application";
+		};
+		DD35A297D1E2DD4F50837D8A /* DeluxTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 157862607A2AFA918D48764D /* Build configuration list for PBXNativeTarget "DeluxTests" */;
+			buildPhases = (
+				659BBAA3BD624E801DE25DA8 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6C6750248F3C7FEF91038983 /* PBXTargetDependency */,
+			);
+			name = DeluxTests;
+			packageProductDependencies = (
+			);
+			productName = DeluxTests;
+			productReference = 8EB3C098240BC0D8D1EA8251 /* DeluxTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		14971AB92472084E0774E362 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					41EB604E042CF12749281FE9 = {
+						ProvisioningStyle = Automatic;
+					};
+					DD35A297D1E2DD4F50837D8A = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 460A427FB88624215513D319 /* Build configuration list for PBXProject "Delux" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 2FF061A8529EBE6B0FB33C27;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B583D3B243FAFF69A8499B76 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				F8B06BD8FF82693CAD635580 /* XCRemoteSwiftPackageReference "swift-crypto" */,
+				040510CE0F84889C66B4C0A4 /* XCRemoteSwiftPackageReference "swift-nio" */,
+				792A5EC824E5C0974F3C28A3 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 58BE59C57123353C5865DD2E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				41EB604E042CF12749281FE9 /* Delux */,
+				DD35A297D1E2DD4F50837D8A /* DeluxTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C5345A0BE2347B3C4B4E4465 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9D3B31C92D9B66C7AA08628B /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		659BBAA3BD624E801DE25DA8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3048ECF91CAC405A6E9921E1 /* AppModelTests.swift in Sources */,
+				63958B76C1774333EEB37025 /* CredentialStoreTests.swift in Sources */,
+				903A8E0A62DD6D27D8BC74B3 /* TmuxProtocolTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9A1476B47B838228BD656054 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3BF450884832CB8437EC236D /* AppModel.swift in Sources */,
+				B6A923F8BBF95C5AB89FCBD2 /* ComputerFormView.swift in Sources */,
+				CAC1A99299397333034F5F94 /* CredentialStore.swift in Sources */,
+				E4B623B4CBF5B60970BE87EF /* DashboardView.swift in Sources */,
+				8647DE083EDE94D1FBC74D8C /* DeluxApp.swift in Sources */,
+				ABA033879193223DBDD7480F /* HostKeyPromptView.swift in Sources */,
+				68178CD2B67C53D5E3EB35DC /* Models.swift in Sources */,
+				A56B9B7E7A9FEED18C026238 /* NewSessionView.swift in Sources */,
+				83AE33C5C2C4B50A9A05DF34 /* SSHTransport.swift in Sources */,
+				78F9CCBC3E0CA648D2AEC12B /* TerminalHostView.swift in Sources */,
+				F73A8A4CD17E0F4FBED3387A /* TerminalScreen.swift in Sources */,
+				1EDDDB1D24C441E25913EBDE /* TerminalSessionController.swift in Sources */,
+				635420C12692FF98EFC2CB14 /* Theme.swift in Sources */,
+				3EAAC859513A6D37A74EF485 /* TmuxProtocol.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		6C6750248F3C7FEF91038983 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 41EB604E042CF12749281FE9 /* Delux */;
+			targetProxy = 67793CC037E76FCA44A5401E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		6422DB2C94A155782A813D1A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Delux;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Delux connects over SSH to the computers you add, including hosts on your local network or a VPN such as Tailscale.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.delux.ios;
+				PRODUCT_NAME = Delux;
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		8F3FE6DBC13B5CAAB64708BA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		96D9EE9A62EC48A9F2B2F6F6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A4643599C4244B1456F57452 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Delux;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Delux connects over SSH to the computers you add, including hosts on your local network or a VPN such as Tailscale.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.delux.ios;
+				PRODUCT_NAME = Delux;
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CFB8E18151B63B28AE5AB7E1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = sh.delux.ios.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Delux.app/Delux";
+			};
+			name = Release;
+		};
+		D3768E5E25CBD99091699970 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = sh.delux.ios.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Delux.app/Delux";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		157862607A2AFA918D48764D /* Build configuration list for PBXNativeTarget "DeluxTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D3768E5E25CBD99091699970 /* Debug */,
+				CFB8E18151B63B28AE5AB7E1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		460A427FB88624215513D319 /* Build configuration list for PBXProject "Delux" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8F3FE6DBC13B5CAAB64708BA /* Debug */,
+				96D9EE9A62EC48A9F2B2F6F6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		ADBD0236795B26CAE8C01E7C /* Build configuration list for PBXNativeTarget "Delux" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6422DB2C94A155782A813D1A /* Debug */,
+				A4643599C4244B1456F57452 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		040510CE0F84889C66B4C0A4 /* XCRemoteSwiftPackageReference "swift-nio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.81.0;
+			};
+		};
+		792A5EC824E5C0974F3C28A3 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-nio-ssh";
+			requirement = {
+				kind = exactVersion;
+				version = 0.15.1;
+			};
+		};
+		B583D3B243FAFF69A8499B76 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = exactVersion;
+				version = 1.20.0;
+			};
+		};
+		F8B06BD8FF82693CAD635580 /* XCRemoteSwiftPackageReference "swift-crypto" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-crypto";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1B2BDE7CF64400782E27C6DE /* NIOSSH */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 792A5EC824E5C0974F3C28A3 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
+			productName = NIOSSH;
+		};
+		4569A7EF8C1BD9B585AB36C0 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B583D3B243FAFF69A8499B76 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+		706AB61E6F273C85F0987068 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F8B06BD8FF82693CAD635580 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		C85F9130070FE84D7DDAD3D1 /* NIOCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 040510CE0F84889C66B4C0A4 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOCore;
+		};
+		D2E97906B1D1C5537D01DCFF /* NIOPosix */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 040510CE0F84889C66B4C0A4 /* XCRemoteSwiftPackageReference "swift-nio" */;
+			productName = NIOPosix;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 14971AB92472084E0774E362 /* Project object */;
+}
