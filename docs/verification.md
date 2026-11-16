@@ -1,12 +1,16 @@
 # Verification record
 
-## Explicit session creation (old-base verification; not yet re-verified)
+## Explicit session creation
 
-The results in this section cover feature commit `f0ef8e6` on old base `081568b`, before the 0.1.0 release. The port onto `5d2e8ea` has not been compiled or run; the historical counts and interactive results below do not verify this port.
+Pre-merge November 16: rebased onto agent-status integration `a741d9d`. Clippy, Rust 1.88 all-target checking and the release build passed. The suite passed 255 tests; one new regression assumed discovery order instead of selecting the target by key. After correcting that assumption, the regression passed. Full CI remains the merge gate.
+
+Real-PTY checks observed local creation, chosen directory, command execution, terminal input, and duplicate rejection. The loopback-SSH fixture additionally completed cancel/quit and verified both sessions survived. Fixtures used temporary keys, configuration and tmux sockets; real sessions and SSH settings were untouched. Earlier delayed-response cancellation checks below remain historical; current model regressions cover cancellation and stale scan results.
+
+The remaining historical results in this section cover feature commit `f0ef8e6` on old base `081568b`, before the 0.1.0 release.
 
 The picker creates sessions on a ready local or SSH computer using a name, target directory, and optional shell command. Creation captures the new session's lifetime identity before attachment, rejects duplicate names, and never retries an uncertain mutation. The previous client remains connected while the form is open and after failed or cancelled creation.
 
-Pre-merge review keeps encoding-tool checks in a subshell so their diagnostic `LC_ALL=C` cannot become the new tmux server's locale. Creation submission waits for an ongoing scan, including the uncertainty rescan after failure; successful creation ignores older in-flight inventory for that computer while other computers finish refreshing. Regression coverage was extended for these cases; these review changes have not been run yet.
+Pre-merge review keeps encoding-tool checks in a subshell so their diagnostic `LC_ALL=C` cannot become the new tmux server's locale. Creation submission waits for an ongoing scan, including the uncertainty rescan after failure; successful creation ignores older in-flight inventory for that computer while other computers finish refreshing. These regressions passed in the checks above.
 
 The macOS ARM64 full suite passed: 184 tests, with one subprocess helper ignored in the ordinary run and exercised by its parent. Formatting, Clippy with warnings denied, Rust 1.88 all-target checks, and the release build passed. Five focused creation regressions also passed after final text updates. Tests cover literal shell/tmux metacharacters, duplicate and invalid-directory non-mutation, starting a missing server, target HOME expansion, replacement identity rejection, bounded form input, cancelled completion, and changed computer configuration.
 

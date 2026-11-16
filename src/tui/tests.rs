@@ -430,6 +430,9 @@ fn creation_success_rejects_an_older_inflight_scan() {
         vec![computer.clone(), other.clone()],
         vec![ready(&computer, vec![]), ready(&other, vec![])],
     );
+    // Initial probe completions can reorder equally ready computers.
+    harness.picker.selection = Selection::Computer(computer.key.clone());
+    harness.picker.rebuild();
     harness.press(&["n", "new-work"]);
     let Some(Command::Create { worker, .. }) = harness
         .picker
@@ -437,6 +440,7 @@ fn creation_success_rejects_an_older_inflight_scan() {
     else {
         panic!("expected explicit creation");
     };
+    assert_eq!(worker.key, computer.key);
     // An existing client's exit can refresh while creation is in flight.
     let Command::Discover { generation, .. } = harness.picker.rescan(false) else {
         panic!("expected discovery");
@@ -468,7 +472,13 @@ fn creation_success_rejects_an_older_inflight_scan() {
     assert!(!harness.picker.scanning);
     assert!(harness.picker.pending.is_empty());
     assert_eq!(harness.picker.selected_session().unwrap().1, created);
-    assert_eq!(harness.picker.entries[1].sessions(), &[other_session]);
+    let other_entry = harness
+        .picker
+        .entries
+        .iter()
+        .find(|entry| entry.worker.key == other.key)
+        .unwrap();
+    assert_eq!(other_entry.sessions(), &[other_session]);
     assert_eq!(harness.launched().len(), 1);
 }
 
