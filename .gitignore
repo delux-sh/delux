@@ -2,3 +2,5 @@
 /bin/
 /dist/
 /target/
+__pycache__/
+*.pyc

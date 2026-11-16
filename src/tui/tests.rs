@@ -97,6 +97,7 @@ impl Harness {
     ) -> Self {
         let effects = Rc::new(RefCell::new(Effects::default()));
         let (mappings, states) = (effects.clone(), effects.clone());
+        let additions = effects.clone();
         let mut saved_state = state.as_ref().cloned().unwrap_or_default();
         let services = Services {
             discover: Arc::new(move |_| Ok((workers.clone(), String::new()))),
@@ -127,6 +128,14 @@ impl Harness {
                     .push((name.into(), destination.into()));
                 Ok(())
             }),
+            add_mapping: Box::new(move |name, destination| {
+                additions
+                    .borrow_mut()
+                    .mappings
+                    .push((name.into(), destination.into()));
+                Ok(())
+            }),
+            add_computer_unavailable: None,
             update_state: Box::new(move |change| {
                 saved_state.apply(change);
                 states.borrow_mut().states.push(saved_state.clone());
@@ -1481,7 +1490,7 @@ fn sixty_column_picker_uses_concise_rows_and_complete_priority_hints() {
     assert!(!view.contains("CH "), "{view}");
     assert_eq!(
         view.lines().last().unwrap(),
-        " enter/tab open  q quit  / filter  f pin  r rescan  ↑↓ move"
+        " enter/tab open  q quit  / filter  a add  f pin  r rescan"
     );
     // At every width, the widget receives complete hints, not clipped spans.
     for width in 1..=80 {
@@ -1945,6 +1954,271 @@ fn moving_away_cancels_an_inflight_preview() {
         .picker
         .update(Message::Tick(start + PREVIEW_DEBOUNCE * 2));
     assert!(cancel.is_cancelled());
+}
+
+#[test]
+fn adding_saves_mapping_rescans_without_reordering_and_selects_new_computer() {
+    for (status, has_sessions) in [
+        (Status::Ready, true),
+        (Status::Ready, false),
+        (Status::AuthRequired, false),
+        (Status::HostTrust, false),
+        (Status::Unreachable, false),
+    ] {
+        let root = crate::test_support::TempDir::new();
+        let path = root.path().join("custom-cli.json");
+        let path = path.to_str().unwrap().to_owned();
+        let alpha = remote("alpha", "alpha", "alpha");
+        let beta = remote("beta", "beta", "beta");
+        let added = remote("alice@build-box", "alice@build-box", "alice@build-box");
+        let mut harness = Harness::new(
+            vec![alpha.clone(), beta.clone()],
+            vec![ready(&alpha, vec![]), ready(&beta, vec![])],
+        );
+        let saved_path = path.clone();
+        let effects = harness.effects.clone();
+        harness.picker.services.add_mapping = Box::new(move |name, destination| {
+            crate::workers::add_host_mapping(&saved_path, name, destination)?;
+            effects
+                .borrow_mut()
+                .mappings
+                .push((name.into(), destination.into()));
+            Ok(())
+        });
+        let discovery_path = path.clone();
+        let existing = vec![beta.clone(), alpha.clone()];
+        harness.picker.services.discover = Arc::new(move |_| {
+            let mut workers = existing.clone();
+            workers.extend(crate::workers::configured_workers(
+                &load_config(&discovery_path)?,
+                &HashSet::new(),
+            ));
+            Ok((workers, String::new()))
+        });
+        let mut inventory = failed(&added, status, "probe result");
+        if has_sessions {
+            inventory.sessions.push(session("$0", "project"));
+        }
+        harness.picker.services.scan = Arc::new(move |_, workers| {
+            assert!(workers.iter().any(|worker| worker.key == "alice@build-box"));
+            let (sender, receiver) = mpsc::channel();
+            sender
+                .send(ready(&beta, vec![session("$1", "work")]))
+                .unwrap();
+            sender.send(inventory.clone()).unwrap();
+            sender
+                .send(failed(&alpha, Status::Unreachable, "offline"))
+                .unwrap();
+            receiver
+        });
+        // Existing computers must keep whatever order they had before the add.
+        let mut expected: Vec<String> = harness
+            .picker
+            .entries
+            .iter()
+            .map(|entry| entry.worker.key.clone())
+            .collect();
+        expected.push("alice@build-box".into());
+        harness.press(&["/", "alpha", "enter", "a", "alice@build-box"]);
+        let view = harness.rendered(120, 24);
+        assert!(view.contains("Add SSH destination/alias:"), "{view}");
+        assert!(
+            view.contains("enter save") && view.contains("esc cancel"),
+            "{view}"
+        );
+        let generation = harness.picker.generation;
+        let command = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(command, Some(Command::Discover { .. })));
+        assert!(!harness.picker.reorder_on_scan);
+        assert_eq!(harness.picker.generation, generation + 1);
+        assert!(harness.picker.add_input.is_none());
+        harness.drive(command);
+        assert_eq!(
+            harness.effects.borrow().mappings,
+            vec![("alice@build-box".into(), "alice@build-box".into())],
+        );
+        assert_eq!(
+            load_config(&path).unwrap().hosts["alice@build-box"],
+            "alice@build-box",
+        );
+        assert_eq!(
+            harness
+                .picker
+                .entries
+                .iter()
+                .map(|entry| entry.worker.key.clone())
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        let row = harness.picker.current_row().unwrap();
+        assert_eq!(harness.picker.entries[row.entry].worker, added);
+        assert_eq!(harness.picker.entries[row.entry].status(), status);
+        assert_eq!(harness.picker.session(row).is_some(), has_sessions);
+        assert!(harness.picker.filter.is_empty());
+        assert!(harness.launched().is_empty());
+    }
+}
+
+#[test]
+fn adding_invalid_destination_keeps_input_open_without_saving() {
+    for destination in ["", "-host", "bad host", "box;id", "é", &"a".repeat(1025)] {
+        let mut harness = Harness::new(vec![], vec![]);
+        let generation = harness.picker.generation;
+        harness.press(&["a", destination, "enter"]);
+        assert_eq!(harness.picker.add_input.as_deref(), Some(destination));
+        assert!(harness.picker.notice.contains("SSH destination"));
+        assert!(harness.effects.borrow().mappings.is_empty());
+        assert_eq!(harness.picker.generation, generation);
+    }
+}
+
+#[test]
+fn adding_duplicate_computer_name_key_or_destination_is_rejected() {
+    for destination in ["build", "node-1", "alice@build-box", "local"] {
+        let computer = remote("node-1", "build", "alice@build-box");
+        let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+        let generation = harness.picker.generation;
+        harness.press(&["a", destination, "enter"]);
+        assert_eq!(harness.picker.add_input.as_deref(), Some(destination));
+        assert!(harness.picker.notice.contains("already exists"));
+        assert!(harness.effects.borrow().mappings.is_empty());
+        assert_eq!(harness.picker.generation, generation);
+    }
+}
+
+#[test]
+fn cancelling_add_computer_keeps_list_and_configuration_unchanged() {
+    let computer = remote("box", "box", "box");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    let selection = harness.picker.selection.clone();
+    let generation = harness.picker.generation;
+    harness.press(&["a", "new-box", "esc"]);
+    assert!(harness.picker.add_input.is_none());
+    assert!(harness.picker.notice.is_empty());
+    assert!(harness.effects.borrow().mappings.is_empty());
+    assert_eq!(harness.picker.selection, selection);
+    assert_eq!(harness.picker.generation, generation);
+    assert_eq!(harness.picker.entries.len(), 1);
+    assert_eq!(harness.picker.entries[0].worker, computer);
+}
+
+#[test]
+fn add_shortcut_is_only_active_in_the_list() {
+    let computer = remote("box", "box", "box");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    harness.picker.terminal_focused = true;
+    harness.press(&["a"]);
+    assert!(harness.picker.add_input.is_none());
+    harness.picker.terminal_focused = false;
+    harness.press(&["/", "a"]);
+    assert_eq!(harness.picker.filter, "a");
+    assert!(harness.picker.add_input.is_none());
+    harness.press(&["esc", "u", "a"]);
+    assert_eq!(harness.picker.input.as_ref().unwrap().text, "a");
+    assert!(harness.picker.add_input.is_none());
+    harness.press(&["esc", "a", "a"]);
+    assert_eq!(harness.picker.add_input.as_deref(), Some("a"));
+    assert!(harness.picker.input.is_none());
+    assert!(harness.effects.borrow().mappings.is_empty());
+}
+
+#[test]
+fn adding_filters_pasted_controls_and_supports_editing() {
+    let mut harness = Harness::new(vec![], vec![]);
+    harness.press(&["a"]);
+    harness
+        .picker
+        .update(Message::Paste("alice@\nbuild\t-box\r".into()));
+    assert_eq!(harness.picker.add_input.as_deref(), Some("alice@build-box"));
+    harness.press(&["backspace"]);
+    assert_eq!(harness.picker.add_input.as_deref(), Some("alice@build-bo"));
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(harness.picker.add_input.as_deref(), Some(""));
+    harness.press(&["ssh-alias", "enter"]);
+    assert_eq!(
+        harness.effects.borrow().mappings,
+        vec![("ssh-alias".into(), "ssh-alias".into())],
+    );
+}
+
+#[test]
+fn add_computer_save_failure_keeps_input_and_list_unchanged() {
+    let computer = remote("box", "box", "box");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    let selection = harness.picker.selection.clone();
+    let generation = harness.picker.generation;
+    harness.picker.services.add_mapping = Box::new(|_, _| Err("read-only config".into()));
+    harness.press(&["a", "new-box", "enter"]);
+    assert!(
+        harness
+            .picker
+            .notice
+            .contains("Could not save cli.json: read-only config")
+    );
+    assert_eq!(harness.picker.add_input.as_deref(), Some("new-box"));
+    assert!(harness.effects.borrow().mappings.is_empty());
+    assert_eq!(harness.picker.generation, generation);
+    assert_eq!(harness.picker.selection, selection);
+    assert_eq!(harness.picker.entries.len(), 1);
+    assert_eq!(harness.picker.entries[0].worker, computer);
+    assert!(harness.picker.select_added.is_none());
+}
+
+#[test]
+fn adding_is_unavailable_when_flags_exclude_configured_hosts() {
+    use crate::options::Options;
+
+    for (opts, flag) in [
+        (
+            Options {
+                local_only: true,
+                ..Options::default()
+            },
+            "--local",
+        ),
+        (
+            Options {
+                hosts: vec!["box".into()],
+                ..Options::default()
+            },
+            "--host",
+        ),
+        (
+            Options {
+                hosts: vec!["box".into()],
+                no_local: true,
+                ..Options::default()
+            },
+            "--host",
+        ),
+    ] {
+        let mut harness = Harness::new(vec![], vec![]);
+        harness.picker.services.add_computer_unavailable = add_computer_unavailable(&opts);
+        let generation = harness.picker.generation;
+        harness.press(&["a"]);
+        assert!(harness.picker.add_input.is_none());
+        assert!(harness.picker.notice.contains(flag));
+        assert!(harness.picker.notice.contains("Restart without"));
+        assert!(harness.effects.borrow().mappings.is_empty());
+        assert_eq!(harness.picker.generation, generation);
+    }
+    for no_local in [false, true] {
+        let mut harness = Harness::new(vec![], vec![]);
+        harness.picker.services.add_computer_unavailable = add_computer_unavailable(&Options {
+            no_local,
+            ..Options::default()
+        });
+        harness.press(&["a", "new-box", "enter"]);
+        assert!(harness.picker.add_input.is_none());
+        assert_eq!(
+            harness.effects.borrow().mappings,
+            vec![("new-box".into(), "new-box".into())],
+        );
+    }
 }
 
 #[test]

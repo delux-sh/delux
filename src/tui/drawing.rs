@@ -72,6 +72,15 @@ impl Picker {
                 tint.accent(),
             ));
         }
+        if let Some(text) = &self.add_input {
+            status_lines.push(Line::styled(
+                format!(
+                    "Add SSH destination/alias: {}▏  (e.g. alice@build-box or ~/.ssh/config alias)",
+                    display(text, 1024),
+                ),
+                tint.accent(),
+            ));
+        }
         if self.filtering || !self.filter.is_empty() {
             status_lines.push(Line::from(vec![
                 Span::styled("/", tint.accent()),
@@ -405,7 +414,7 @@ impl Picker {
                 ("shift-tab", "list · terminal focused"),
                 ("tmux prefix d", "detach"),
             ]
-        } else if self.input.is_some() {
+        } else if self.input.is_some() || self.add_input.is_some() {
             if self.input.as_ref().is_some_and(|input| input.connect) {
                 &[
                     ("enter", "sign in"),
@@ -430,6 +439,7 @@ impl Picker {
                 ("enter", "connect"),
                 ("q", "quit"),
                 ("/", "filter"),
+                ("a", "add"),
                 ("u", "ssh user"),
                 ("r", "rescan"),
                 ("↑↓", "move"),
@@ -448,6 +458,7 @@ impl Picker {
                 ),
                 ("q", "quit"),
                 ("/", "filter"),
+                ("a", "add"),
                 ("f", "pin"),
                 ("r", "rescan"),
                 ("↑↓", "move"),
@@ -462,6 +473,7 @@ impl Picker {
             && !self.terminal_focused
             && self.input.is_none()
             && self.creation.is_none()
+            && self.add_input.is_none()
             && !self.filtering)
             .then_some((
                 "tab",

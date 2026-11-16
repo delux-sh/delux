@@ -112,6 +112,20 @@ pub fn load_config(path: &str) -> Result<Config, String> {
 /// with the current file so concurrent savers keep each other's hosts and ignored names.
 /// Refuses invalid existing configuration and uses private directory/file modes.
 pub fn save_host_mapping(path: &str, name: &str, destination: &str) -> Result<(), String> {
+    write_host_mapping(path, name, destination, false)
+}
+
+/// Inserts a new computer, checking the latest configuration under its lock.
+pub(crate) fn add_host_mapping(path: &str, name: &str, destination: &str) -> Result<(), String> {
+    write_host_mapping(path, name, destination, true)
+}
+
+fn write_host_mapping(
+    path: &str,
+    name: &str,
+    destination: &str,
+    create_only: bool,
+) -> Result<(), String> {
     #[derive(Serialize)]
     struct SavedConfig<'a> {
         hosts: &'a BTreeMap<String, String>,
@@ -123,6 +137,15 @@ pub fn save_host_mapping(path: &str, name: &str, destination: &str) -> Result<()
     validate_destination(destination)?;
     crate::state::locked_update(path, |target| {
         let mut config = load_config(target)?;
+        if create_only
+            && (name == "local"
+                || config.hosts.contains_key(name)
+                || config.hosts.values().any(|value| value == destination))
+        {
+            return Err(
+                "That computer name or SSH destination already exists; choose another.".into(),
+            );
+        }
         config.hosts.insert(name.into(), destination.into());
         let mut raw = serde_json::to_vec_pretty(&SavedConfig {
             hosts: &config.hosts,
@@ -549,6 +572,28 @@ mod tests {
             assert!(save_host_mapping(path, name, target).is_err());
             assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
         }
+    }
+
+    #[test]
+    fn adding_computer_preserves_hidden_or_concurrently_saved_mappings() {
+        let dir = TempDir::new();
+        let path = dir.path().join("cli.json");
+        let path = path.to_str().unwrap();
+        let raw = r#"{"hosts":{"hidden":"alice@box"},"ignore":["hidden"]}"#;
+        std::fs::write(path, raw).unwrap();
+        for (name, destination) in [
+            ("hidden", "hidden"),
+            ("alice@box", "alice@box"),
+            ("local", "local"),
+        ] {
+            assert!(add_host_mapping(path, name, destination).is_err());
+            assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+        }
+        add_host_mapping(path, "new", "bob@box").unwrap();
+        let saved = load_config(path).unwrap();
+        assert_eq!(saved.hosts["hidden"], "alice@box");
+        assert_eq!(saved.hosts["new"], "bob@box");
+        assert_eq!(saved.ignore, ["hidden"]);
     }
 
     #[test]

@@ -420,6 +420,7 @@ fn unix_now() -> i64 {
 pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
     let discover_opts = opts.clone();
     let config_path = opts.config_path.clone();
+    let add_config_path = config_path.clone();
     let state_path = default_state_path();
     let state = state_path.clone().and_then(|path| load_state(&path));
     let services = Services {
@@ -435,6 +436,10 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         save_mapping: Box::new(move |name, destination| {
             save_host_mapping(&config_path, name, destination)
         }),
+        add_mapping: Box::new(move |name, destination| {
+            crate::workers::add_host_mapping(&add_config_path, name, destination)
+        }),
+        add_computer_unavailable: super::add_computer_unavailable(opts),
         update_state: Box::new(move |change| match &state_path {
             Ok(path) => update_state(path, change),
             Err(error) => Err(error.clone()),
