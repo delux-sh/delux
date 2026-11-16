@@ -4,3 +4,9 @@
 /target/
 __pycache__/
 *.pyc
+/ios/build/
+/ios/.smoke/
+/ios/smoke.yml
+/ios/DeluxSmoke.xcodeproj/
+**/xcuserdata/
+*.xcuserstate

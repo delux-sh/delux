@@ -117,7 +117,7 @@ The embedded terminal supports keyboard input and mouse-wheel scrolling, but not
 
 ## Configuration
 
-Use `~/.ssh/config` for users, keys, ports, jump hosts, and aliases. Delux doesn't store passwords or private keys. SSH forwarding is disabled; see the [security model](SECURITY.md#security-model).
+The CLI uses `~/.ssh/config` for users, keys, ports, jump hosts, and aliases. It doesn't store passwords or private keys. SSH forwarding is disabled; see the [security model](SECURITY.md#security-model). The iPhone companion stores its own credentials as described below.
 
 To always include or ignore computers, create `~/.config/delux/cli.json`:
 
@@ -133,6 +133,24 @@ To always include or ignore computers, create `~/.config/delux/cli.json`:
 
 `--config PATH` selects another file. Configuration and state also respect `XDG_CONFIG_HOME` and `XDG_STATE_HOME`. [Discovery rules and local storage](SECURITY.md#discovery-and-local-data) cover shared computers, matching, and saved preferences.
 
+## iPhone companion (source build)
+
+`ios/` contains a native SwiftUI dashboard and SwiftTerm terminal over Apple's SwiftNIO SSH. Add a computer by hostname/IP, SSH port and username; see its tmux sessions and agent status, open a terminal, or create a session with a directory and optional command. It connects directly: no Delux daemon or wallet is required on the server.
+
+Use a generated per-computer Ed25519 key (copy its public key into that server account's `authorized_keys`) or an SSH password. Credentials stay in the device-only Keychain. Verify the displayed server fingerprint through another trusted channel before connecting. A changed host key blocks access; forgetting a pin is an explicit action in Edit Computer.
+
+To build with Xcode and XcodeGen installed:
+
+```sh
+cd ios
+xcodegen generate
+open Delux.xcodeproj
+```
+
+Choose the **Delux** scheme and an iPhone simulator; **Product → Test** runs its tests. Xcode 26.4.1 is the locally tested toolchain. For a physical iPhone, select your signing team in Xcode and enable Developer Mode on the phone. SwiftTerm's pinned build-information plugin needs Xcode approval; command-line builds use `-skipPackagePluginValidation`. Simulator builds still need ad-hoc signing (`CODE_SIGN_IDENTITY=-`), not `CODE_SIGNING_ALLOWED=NO`, because Keychain requires application entitlements. `project.yml` is the project source; regenerate the project after changing it. Package versions are locked in the shared `Package.resolved`.
+
+Connect through the separate Tailscale iOS app when needed. Desktop SSH aliases, ProxyJump, imported private keys, keyboard-interactive/MFA and automatic tailnet discovery are not supported. The app closes SSH connections in the background and reconnects to the saved session lifetime when reopened; remote tmux sessions keep running. There are no background notifications or universal agent-approval buttons: respond inside the actual terminal. No App Store or TestFlight release is published.
+
 ## Contributing
 
 This is a personal side project. Bug reports, small fixes, and ideas are welcome; please open an issue before starting a larger change.
@@ -141,7 +159,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development and DCO sign-offs. Report
 
 ## Acknowledgements
 
-Delux leans entirely on [tmux](https://github.com/tmux/tmux), [OpenSSH](https://www.openssh.com), and [Tailscale](https://tailscale.com), and is built with [Ratatui](https://ratatui.rs) and [vt100](https://github.com/doy/vt100-rust). Thank you to the people who make them.
+The CLI uses [tmux](https://github.com/tmux/tmux), [OpenSSH](https://www.openssh.com), [Tailscale](https://tailscale.com), [Ratatui](https://ratatui.rs) and [vt100](https://github.com/doy/vt100-rust). The iPhone companion adds [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) and [SwiftNIO SSH](https://github.com/apple/swift-nio-ssh). Thank you to the people who make them.
 
 ## License
 

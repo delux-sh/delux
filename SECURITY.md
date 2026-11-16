@@ -16,11 +16,17 @@ Before the first release, fixes land on `main`. After publication, security fixe
 
 ### SSH and credentials
 
-Authentication and host keys stay with OpenSSH. Delux reads SSH configuration rather than importing keys or saving passwords. Background scans, previews, and explicit session creation use `BatchMode=yes` and `StrictHostKeyChecking=yes`: they cannot prompt or accept unknown host keys. Interactive prompts appear only after you choose to sign in or attach. Verify fingerprints through a trusted channel before accepting them.
+The desktop CLI keeps authentication and host keys with OpenSSH. It reads SSH configuration rather than importing keys or saving passwords. Background scans, previews, and explicit session creation use `BatchMode=yes` and `StrictHostKeyChecking=yes`: they cannot prompt or accept unknown host keys. Interactive prompts appear only after you choose to sign in or attach. Verify fingerprints through a trusted channel before accepting them.
 
 Sign-in, scans, previews, and attachments reuse a private, per-process SSH control connection where possible. Delux closes these connections on exit; connections with no active channels expire after 30 seconds. An active sign-in or attached client keeps the connection alive, and background probe timeouts do not reset it.
 
 Port, agent, and X11 forwarding are disabled for every Delux SSH operation, including attachments. Use SSH directly when you need forwarding.
+
+### iPhone companion
+
+The native app uses Apple's SwiftNIO SSH rather than an OpenSSH subprocess. Passwords and per-computer Ed25519 private keys are stored in Keychain with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and no synchronisation. Hostnames, usernames and pinned SHA256 host-key fingerprints live in the app's sandbox. Unknown host keys require explicit out-of-band verification; a mismatching pinned key is rejected before authentication. Forgetting a key requires a separate confirmation.
+
+The app opens only explicitly configured computers. It has no agent/port forwarding, remote helper service, telemetry, push service or wallet integration. SSH channels close on backgrounding; tmux sessions do not. Reattachment checks the saved tmux server lifetime and session ID rather than silently accepting a replacement server. Remote terminal output remains untrusted; clipboard escape sequences do not grant access to the device clipboard.
 
 ### Commands and terminal output
 
