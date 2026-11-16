@@ -375,6 +375,10 @@ fn ownership_and_lifecycle_preserve_other_agents_and_other_programs() {
         "delux agent-status set done --agent custom-other",
         "other-command --agent custom",
         "delux agent-status set done --agent custom ",
+        "echo agent-status set done --agent custom",
+        "echo delux agent-status set done --agent custom",
+        "delux agent-status set done && other --agent custom",
+        "delux agent-status hook claude Stop --agent custom",
     ] {
         assert!(!a.owns(command), "{command}");
     }

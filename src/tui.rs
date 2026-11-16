@@ -566,6 +566,8 @@ impl Picker {
                                 && session.server_start == row.server_start
                         }) {
                             session.agent = row.agent;
+                            // Unselected sessions do not receive preview output updates.
+                            session.output = session.output.max(row.output);
                         }
                     }
                 }

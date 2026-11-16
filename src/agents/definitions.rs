@@ -47,10 +47,26 @@ impl HookAgent for UserAgent {
     }
 
     fn owns(&self, command: &str) -> bool {
-        command.contains(" agent-status ")
-            && command
-                .rsplit_once(" --agent ")
-                .is_some_and(|(_, id)| id == self.id)
+        command
+            .rsplit_once(" agent-status ")
+            .is_some_and(|(executable, arguments)| {
+                if !paths::is_handler_executable(executable) {
+                    return false;
+                }
+                let Some((operation, id)) = arguments.rsplit_once(" --agent ") else {
+                    return false;
+                };
+                id == self.id
+                    && matches!(
+                        operation,
+                        "clear"
+                            | "set working"
+                            | "set waiting"
+                            | "set blocked"
+                            | "set done"
+                            | "set error"
+                    )
+            })
     }
 
     fn add_handler_fields(&self, fields: &mut Vec<(String, Json)>) {

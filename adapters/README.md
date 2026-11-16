@@ -17,7 +17,7 @@ tmux set-option -p -t "$TMUX_PANE" @agent_status "waiting $(date +%s)"
 - `error` means failed and stopped. `idle` means at rest and shows no status.
 - Clear it with `tmux set-option -p -u -t "$TMUX_PANE" @agent_status`.
 - Set it on the pane the agent runs in. A session shows the most urgent status among its panes: waiting, then error, then working, then done.
-- Include the time. Delux hides `working` once neither the status nor the pane's output has changed for ten minutes, so a crashed agent does not look busy forever.
+- Include the time. Delux hides `working` once neither the status nor the session's window output has changed for ten minutes, so a crashed agent does not look busy forever. Background status refreshes also refresh output times for unselected sessions.
 
 Any tool that can run a command on its own events can follow this contract.
 
@@ -35,6 +35,8 @@ The reporter stores `blocked` as `waiting`. Use `clear`, not `set idle`, to remo
 Run `delux agents install` on each computer where agents run. It detects Claude Code, Codex, Gemini CLI, OpenCode, Pi and OMP through their executable on `PATH` or configuration directory. `delux agents` (or `delux agents status`) shows detection and reporting status; `install NAME...` selects specific agents, and `uninstall [NAME...]` removes only Delux reporting. User-defined agents are listed after the built-ins.
 
 Claude uses `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`; Codex uses `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json`. JSON settings retain unrelated hooks, key order and duplicate keys, and existing settings files receive a one-time `.delux-backup` before modification. Agent settings are limited to 1 MiB. Codex requires opening `/hooks` once to trust new hooks. Restart already-running sessions after installation. Marked extensions and plugins are Delux-owned and are replaced or removed without a backup; no lock files are left in agent directories.
+
+Claude's `StopFailure` reports `error`, not successful completion. Hook ownership matches Delux's generated command shape; commands that merely mention the reporter, or combine it with other shell commands, are left untouched.
 
 ## Gemini CLI
 

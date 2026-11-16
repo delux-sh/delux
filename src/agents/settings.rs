@@ -38,11 +38,13 @@ impl HookAgent for Agent {
         command
             .rsplit_once(" agent-status hook ")
             .is_some_and(|(executable, suffix)| {
-                !executable.is_empty()
+                super::paths::is_handler_executable(executable)
                     && suffix.split_once(' ').is_some_and(|(name, event)| {
                         name == self.name
                             && !event.is_empty()
-                            && !event.chars().any(char::is_whitespace)
+                            && event
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
                     })
             })
     }

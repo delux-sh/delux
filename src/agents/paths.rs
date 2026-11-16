@@ -172,3 +172,15 @@ pub(super) fn handler_executable(
         .ok_or("running executable path is not valid UTF-8")?;
     Ok(format!("'{}'", executable.replace('\'', "'\\''")))
 }
+
+// Recognize only the executable spellings emitted by handler_executable, not
+// arbitrary shell commands that happen to mention our reporter arguments.
+pub(super) fn is_handler_executable(command: &str) -> bool {
+    command == "delux"
+        || command
+            .strip_prefix('\'')
+            .and_then(|command| command.strip_suffix('\''))
+            .is_some_and(|path| {
+                path.starts_with('/') && path.split("'\\''").all(|part| !part.contains('\''))
+            })
+}

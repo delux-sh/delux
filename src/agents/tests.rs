@@ -40,7 +40,7 @@ fn event_mapping_table_and_background_tasks() {
         ("claude", "PostToolUseFailure", Set("working")),
         ("claude", "Notification", Set("waiting")),
         ("claude", "Stop", Set("done")),
-        ("claude", "StopFailure", Set("done")),
+        ("claude", "StopFailure", Set("error")),
         ("claude", "SessionEnd", Clear),
         ("codex", "SessionStart", Clear),
         ("codex", "UserPromptSubmit", Set("working")),
@@ -331,6 +331,26 @@ fn upgrades_old_paths_and_events_including_mixed_groups() {
         settings::status(&AGENTS[0], &path, "'/new/delux'").unwrap(),
         "partly installed"
     );
+}
+
+#[test]
+fn hook_ownership_preserves_commands_that_only_mention_the_reporter() {
+    let root = TempDir::new();
+    let path = root.path().join("settings.json");
+    let original = json!({"hooks": {"Stop": [{"hooks": [
+        {"type": "command", "command": "echo agent-status hook claude Stop"},
+        {"type": "command", "command": "echo delux agent-status hook claude Stop"},
+        {"type": "command", "command": "notify; delux agent-status hook claude Stop"},
+        {"type": "command", "command": "delux agent-status hook claude Stop;notify"},
+        {"type": "command", "command": "'/bin/notify' && delux agent-status hook claude Stop"}
+    ]}]}});
+    fs::write(&path, original.to_string()).unwrap();
+    settings::update(&AGENTS[0], &path, "delux", true).unwrap();
+    settings::update(&AGENTS[0], &path, "delux", false).unwrap();
+    assert_eq!(json_file(&path), original);
+    for executable in ["delux", "'/old/delux'", "'/path with '\\''quote/delux'"] {
+        assert!(paths::is_handler_executable(executable), "{executable}");
+    }
 }
 
 #[test]

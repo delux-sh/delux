@@ -2375,6 +2375,40 @@ fn working_marker_expires_only_without_recent_status_or_output() {
 }
 
 #[test]
+fn agent_refresh_keeps_unselected_native_working_visible_with_recent_output() {
+    let computer = worker("box", "box");
+    let mut background = with_agent(session("$2", "background"), AgentState::Working, None);
+    background.output = NOW - 601;
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(
+            &computer,
+            vec![session("$1", "selected"), background],
+        )],
+    );
+    assert!(!harness.rendered(120, 30).contains("●  background"));
+    let selection = harness.picker.selection.clone();
+    for output in [NOW, NOW - 700] {
+        harness.picker.update(Message::AgentStatuses {
+            generation: harness.picker.generation,
+            results: vec![(
+                computer.clone(),
+                Ok(vec![AgentStatusRow {
+                    server_pid: 1,
+                    server_start: 1,
+                    session_id: "$2".into(),
+                    output,
+                    agent: crate::tmux::parse_agent_status("working"),
+                }]),
+            )],
+        });
+        assert!(harness.rendered(120, 30).contains("●  background"));
+        assert_eq!(harness.picker.selection, selection);
+        assert_eq!(harness.picker.entries[0].sessions()[1].output, NOW);
+    }
+}
+
+#[test]
 fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_preview() {
     let computer = worker("box", "box");
     let mut first = session("$1", "first");
@@ -2388,6 +2422,7 @@ fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_pre
             server_pid: 1,
             server_start: 1,
             session_id: "$2".into(),
+            output: NOW,
             agent: Some(crate::tmux::AgentStatus {
                 state: AgentState::Waiting,
                 since: None,
@@ -2430,6 +2465,7 @@ fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_pre
                 server_pid: 1,
                 server_start: 1,
                 session_id: "$2".into(),
+                output: NOW,
                 agent: Some(crate::tmux::AgentStatus {
                     state: AgentState::Error,
                     since: None,
@@ -2467,6 +2503,7 @@ fn agent_refresh_ignores_old_generation_other_server_and_failures() {
                     server_pid: pid,
                     server_start: start,
                     session_id: "$1".into(),
+                    output: NOW,
                     agent: Some(crate::tmux::AgentStatus {
                         state: AgentState::Waiting,
                         since: None,

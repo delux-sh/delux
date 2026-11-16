@@ -34,7 +34,8 @@ pub(super) fn mapping(agent: &str, event: &str, payload: &Value) -> Option<Actio
         {
             Some(Set("working"))
         }
-        ("claude" | "codex", "Stop") | ("claude", "StopFailure") => Some(Set("done")),
+        ("claude" | "codex", "Stop") => Some(Set("done")),
+        ("claude", "StopFailure") => Some(Set("error")),
         _ => None,
     }
 }

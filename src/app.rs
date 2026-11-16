@@ -1279,7 +1279,7 @@ exit "$DELUX_TEST_CODE"
         let _error = EnvVar::set("DELUX_TEST_ERROR", "");
         let _output = EnvVar::set(
             "DELUX_TEST_OUTPUT",
-            "DELUX_STATUS_1\n1234 1700000000 $7 waiting 1700000004\nDELUX_END\n",
+            "DELUX_STATUS_2\n1234 1700000000 $7 1700000003 waiting 1700000004\nDELUX_END\n",
         );
         let rows = agent_status(&Cancel::new(), &worker).unwrap();
         assert_eq!(rows.len(), 1);
@@ -1324,7 +1324,7 @@ exit "$DELUX_TEST_CODE"
         }
         let _output = EnvVar::set("DELUX_TEST_OUTPUT", "not a status frame");
         assert!(agent_status(&Cancel::new(), &worker).is_err());
-        let _output = EnvVar::set("DELUX_TEST_OUTPUT", "DELUX_STATUS_1\nDELUX_END\n");
+        let _output = EnvVar::set("DELUX_TEST_OUTPUT", "DELUX_STATUS_2\nDELUX_END\n");
         assert!(agent_status(&Cancel::new(), &worker).unwrap().is_empty());
         let cancel = Cancel::new();
         cancel.cancel();

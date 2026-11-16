@@ -28,7 +28,7 @@ Delux validates SSH destinations, quotes session identifiers in commands, and ch
 
 Picker previews use read-only `tmux capture-pane`. Both previews and the embedded terminal render parsed output rather than passing escape sequences directly to your terminal. Remote clipboard, window-title, and window-resize requests are ignored. The full-terminal `delux attach` command passes normal tmux output through to your terminal instead.
 
-Agent status is untrusted pane metadata: Delux accepts only the fixed states `working`, `waiting`, and `done` with an optional Unix timestamp. Raw status text is never rendered or executed.
+Agent status is untrusted pane metadata: Delux accepts only `working`, `waiting` (or `blocked`), `done`, `error` and `idle` with an optional Unix timestamp. Unsafe option characters are rejected before pane records are framed, so newlines cannot forge other panes or sessions. Raw status text is never rendered or executed.
 
 Agent setup is opt-in: `delux agents install` is the only operation that adds reporting to other programs' settings, and runs only when you invoke it. It adds only Delux's own hook entries, preserves other settings (including JSON key order and duplicate keys), and keeps a one-time `.delux-backup` before modifying an existing settings file. `delux agents uninstall` removes only Delux's entries (or its marked Pi/OMP extension or OpenCode plugin, which need no backup). Both preserve settings-file symlinks and permission bits and refuse malformed JSON. Agent settings files and updates are limited to 1 MiB. Updates briefly lock the existing parent directory, without leaving lock files there; unavailable locks cause an error rather than waiting.
 
