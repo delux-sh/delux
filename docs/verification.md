@@ -1,5 +1,13 @@
 # Verification record
 
+## v0.2.0 release validation (November 17, 2026)
+
+The nonpublishing [Release run 44222032589](https://github.com/delux-sh/delux/actions/runs/44222032589) passed on candidate `83e3a46f36811e35d0416c96ff02c7503e0e309b`: Linux/macOS tests and Clippy, minimum Rust, archive build, and all four native Homebrew package jobs. Each platform installed the generated formula with dependencies, passed `brew test` and `brew audit --strict`, and exercised the installed picker. Platforms were macOS Apple Silicon and Intel, and Linux ARM64 and x86_64; none substituted emulation or skipped dependencies.
+
+All four downloaded archives matched `SHA256SUMS`. Inspection confirmed executable permissions and bundled README, GPL license, generated third-party notices, Rust notices and musl copyright information; staged release notes matched the committed v0.2.0 notes. The local release executable also reported v0.2.0. This validation did not create a tag, publish a GitHub release or update the tap. Tag publication remains gated by another successful release run and protected-environment approval; the tap must use verified published checksums, not these dry-run hashes.
+
+Existing feature-level verification below covers session creation, agent status, add-computer and destructive termination. iPhone distribution is separate: signing-team configuration, distribution signing, an opaque icon export, encryption/privacy/licensing review and physical-device testing are still required before TestFlight readiness.
+
 ## Explicit session termination (November 16, 2026)
 
 The CLI's list-only `x` action and iPhone session context/terminal menus open a captured-target confirmation naming the session and computer/SSH destination, with Cancel as the default. The command checks numeric session ID and server lifetime in the same tmux queue as `kill-session`, requires an exact completion receipt, never starts a server or falls back to a name, and never automatically retries an uncertain result. Confirmation does not disconnect the active terminal; successful termination closes only the matching client and invalidates older inventory.
