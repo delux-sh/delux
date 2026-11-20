@@ -24,6 +24,13 @@ brew install delux-sh/tap/delux
 
 [Release archives](https://github.com/delux-sh/delux/releases) cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
 
+To upgrade an existing Homebrew installation:
+
+```sh
+brew update
+brew upgrade delux-sh/tap/delux
+```
+
 ### Build from source
 
 You'll need Rust 1.88+ and a C linker—Xcode Command Line Tools on macOS, or your Linux distribution's build tools:
