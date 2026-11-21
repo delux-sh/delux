@@ -1199,7 +1199,10 @@ impl Picker {
                 .position(|row| row.kind == kind && self.entries[row.entry].worker.key == *worker)
         {
             self.cursor = Some(index);
-            self.remember();
+            // Retain a session's identity across a failed probe.
+            if kind == RowKind::Session {
+                self.remember();
+            }
             return;
         }
         // Keep the remembered identity when a filter temporarily hides it.

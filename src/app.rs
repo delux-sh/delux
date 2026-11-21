@@ -523,9 +523,8 @@ fn show_inventory(out: &mut dyn Write, inventory: &Inventory, separate: bool) {
     }
     let worker = &inventory.worker;
     let _ = write!(out, "{}", display(&worker.name, 200));
-    if let Some(destination) = &worker.destination
-        && destination != &worker.name
-    {
+    let destination = worker.destination.as_deref().unwrap_or(&worker.key);
+    if destination != worker.name {
         let _ = write!(out, " — {}", display(destination, 200));
     }
     if worker.online == Some(false) {
@@ -977,7 +976,10 @@ mod tests {
     #[test]
     fn human_inventory_uses_plain_rows_and_correct_counts() {
         let mut inventory = Inventory {
-            worker: local_worker(),
+            worker: Worker {
+                name: "laptop".into(),
+                ..local_worker()
+            },
             sessions: vec![session()],
             status: Status::Ready,
             detail: String::new(),
@@ -992,7 +994,7 @@ mod tests {
             let mut output = Vec::new();
             show_inventory(&mut output, &inventory, false);
             let output = String::from_utf8(output).unwrap();
-            assert_eq!(output, format!("local\n  work  $7  {expected}\n"));
+            assert_eq!(output, format!("laptop — local\n  work  $7  {expected}\n"));
         }
         inventory.sessions.clear();
         inventory.status = Status::ProbeFailed;
@@ -1001,7 +1003,7 @@ mod tests {
         show_inventory(&mut output, &inventory, false);
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "local\n  probe-failed: connection refused\n",
+            "laptop — local\n  probe-failed: connection refused\n",
         );
     }
 
@@ -1013,7 +1015,10 @@ mod tests {
             since: None,
         });
         let inventory = Inventory {
-            worker: local_worker(),
+            worker: Worker {
+                name: "laptop".into(),
+                ..local_worker()
+            },
             sessions: vec![failed],
             status: Status::Ready,
             detail: String::new(),
@@ -1022,14 +1027,17 @@ mod tests {
         show_inventory(&mut output, &inventory, false);
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "local\n  work  $7  1 window, detached  error\n",
+            "laptop — local\n  work  $7  1 window, detached  error\n",
         );
     }
 
     #[test]
     fn human_inventory_aligns_display_columns_and_separates_computers() {
         let mut inventory = Inventory {
-            worker: local_worker(),
+            worker: Worker {
+                name: "laptop".into(),
+                ..local_worker()
+            },
             sessions: vec![session(); 3],
             status: Status::Ready,
             detail: String::new(),
@@ -1058,11 +1066,11 @@ mod tests {
         assert_eq!(
             output,
             concat!(
-                "local\n",
+                "laptop — local\n",
                 "  a b   $7    1 window,   detached  working\n",
                 "  東京  $123  12 windows, 2 clients attached  waiting\n",
                 "  e\u{301}     $9    1 window,   1 client attached  done\n",
-                "\nother computer\n",
+                "\nother computer — local\n",
                 "  No tmux sessions\n",
             )
         );

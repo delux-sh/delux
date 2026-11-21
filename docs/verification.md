@@ -12,6 +12,10 @@ All three section headings use the same muted, non-bold style. The focused pinne
 
 Known-offline peers now start in Other computers during the initial scan rather than briefly appearing in Computers. A successful inventory overrides the offline hint and preserves selection when moving the computer up. All 85 picker tests and the release build passed. A live startup capture showed six actual offline Tailscale peers below the divider while the remaining computers were still probing.
 
+PR review corrected the CLI inventory tests to use a fixed hostname and retained the `local` attachment identifier in plain-text headings (`hostname — local`). It also preserved the selected session's identity through a failed probe; the recovery regression now selects the second session and verifies that it returns instead of jumping to the first. Clippy with warnings denied passed, and a fresh Debug executable printed `d3vbook — local` with an isolated, empty tmux directory.
+
+The local full Rust suite passed 276 tests, including all inventory and picker regressions, with one subprocess fixture ignored. One existing test failed: `cancellation_wait_kills_descendant_process_groups_within_half_a_second` exceeded its 500 ms wall-clock assertion. The cancellation implementation and timing test were not changed or retried; passing CI on the final PR head remains the merge gate.
+
 ## iPhone terminal keyboard layout (November 20, 2026)
 
 The terminal accessory row now respects bottom and horizontal safe areas, adding space for the home-indicator area when needed. A UIKit keyboard layout guide bounds the terminal above the keyboard and accessory; SwiftUI no longer applies a second keyboard adjustment.

@@ -1544,23 +1544,34 @@ fn sidebar_status_moves_keep_the_selected_computer() {
     );
     harness.picker.update(Message::Checked(ready(
         &recovering,
-        vec![session("$1", "recovered")],
+        vec![session("$1", "first"), session("$2", "recovered")],
     )));
     assert_eq!(
         harness.picker.selected_session().unwrap().0.key,
         "recovering"
     );
     assert!(!harness.rendered(100, 20).contains("Other computers"));
+    harness.press(&["down"]);
+    let selected = harness.picker.selection.clone();
     harness.picker.update(Message::Checked(failed(
         &recovering,
         Status::Unreachable,
         "Connection lost",
     )));
+    let row = harness.picker.current_row().unwrap();
+    assert!(row.kind == RowKind::Computer);
+    assert_eq!(harness.picker.entries[row.entry].worker.key, "recovering");
+    assert_eq!(harness.picker.selection, selected);
+    harness.picker.update(Message::Checked(ready(
+        &recovering,
+        vec![session("$1", "first"), session("$2", "recovered")],
+    )));
+    assert_eq!(harness.picker.selection, selected);
     assert_eq!(
-        harness.picker.selection,
-        Selection::Computer("recovering".into())
+        harness.picker.selected_session().unwrap().1.name,
+        "recovered"
     );
-    harness.press(&["up", "enter"]);
+    harness.press(&["up", "up", "enter"]);
     assert_eq!(harness.launched()[0].worker.key, "working");
 }
 
