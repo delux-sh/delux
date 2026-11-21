@@ -2,9 +2,15 @@
 
 ## Sidebar availability grouping (November 20, 2026)
 
-Ready and probing computers remain above a blank divider and an Other computers heading. Authentication, host-trust, missing-tool and connection failures appear below it. Ordering within each section is preserved between explicit rescans; selection follows a computer when its sessions disappear or access returns. Filtering omits empty sections, and navigation skips the divider and heading.
+The Browse sidebar separates Pinned sessions, Computers, and Other computers with blank lines and omits empty sections. Pinned shortcuts retain their computer label and their ordinary nested session row. Ready and probing computers remain in Computers; authentication, host-trust, missing-tool and connection failures appear in Other computers. Ordering within each section is preserved between explicit rescans; selection follows a computer when its sessions disappear or access returns. Navigation skips section headings and blank rows.
 
 All 84 picker tests passed, including grouping, recovery, filtering, selection and inline sign-in cases; the release build passed. An isolated real-PTY run used a private tmux server and an unresolvable explicit SSH destination, verifying the visible gap, the failure below local work, arrow navigation across the divider, clean exit and session preservation. The throwaway capture driver was corrected to wait for the incremental redraw to finish before inspecting the screen. Fixture sessions and capture scripts were removed; no user sessions were changed.
+
+The three-section follow-up also passed all 84 picker tests and a release build. A live picker in an isolated tmux server displayed all three headings and gaps after pinning a session, retained both its shortcut and nested row, and exited without ending the work session. The smoke assertion was scoped to sidebar rows rather than counting the pin-confirmation notice. Fixture servers and the throwaway driver were removed.
+
+All three section headings use the same muted, non-bold style. The focused pinned-section test and release rebuild passed after this refinement; a live tmux capture confirmed that none of the three heading labels had the bold attribute.
+
+Known-offline peers now start in Other computers during the initial scan rather than briefly appearing in Computers. A successful inventory overrides the offline hint and preserves selection when moving the computer up. All 85 picker tests and the release build passed. A live startup capture showed six actual offline Tailscale peers below the divider while the remaining computers were still probing.
 
 ## iPhone terminal keyboard layout (November 20, 2026)
 

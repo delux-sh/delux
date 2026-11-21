@@ -76,6 +76,7 @@ struct Services {
 enum RowKind {
     PinnedHeader,
     Separator,
+    ComputersHeader,
     OtherHeader,
     Pinned,
     /// A computer's heading above its sessions.
@@ -1136,30 +1137,43 @@ impl Picker {
         for other in [false, true] {
             let mut heading_added = false;
             for (i, entry) in self.entries.iter().enumerate() {
-                if other == matches!(entry.status(), Status::Ready | Status::Scanning) {
+                let available = match entry.status() {
+                    Status::Ready => true,
+                    Status::Scanning => entry.worker.online != Some(false),
+                    _ => false,
+                };
+                if other == available {
                     continue;
                 }
                 let worker_match = query.is_empty()
                     || matches(&entry.worker.name)
                     || entry.worker.destination.as_deref().is_some_and(matches);
                 let sessions = entry.sessions();
-                if sessions.is_empty() {
-                    if worker_match {
-                        if other && !heading_added {
-                            if !self.rows.is_empty() {
-                                self.rows.push(Row::new(RowKind::Separator, i, 0));
-                            }
-                            self.rows.push(Row::new(RowKind::OtherHeader, i, 0));
-                            heading_added = true;
-                        }
-                        self.rows.push(Row::new(RowKind::Computer, i, 0));
-                    }
-                    continue;
-                }
                 let mut visible = (0..sessions.len())
                     .filter(|&j| worker_match || matches(&sessions[j].name))
                     .peekable();
-                if visible.peek().is_some() {
+                if sessions.is_empty() {
+                    if !worker_match {
+                        continue;
+                    }
+                } else if visible.peek().is_none() {
+                    continue;
+                }
+                if !heading_added {
+                    if !self.rows.is_empty() {
+                        self.rows.push(Row::new(RowKind::Separator, i, 0));
+                    }
+                    let kind = if other {
+                        RowKind::OtherHeader
+                    } else {
+                        RowKind::ComputersHeader
+                    };
+                    self.rows.push(Row::new(kind, i, 0));
+                    heading_added = true;
+                }
+                if sessions.is_empty() {
+                    self.rows.push(Row::new(RowKind::Computer, i, 0));
+                } else {
                     self.rows.push(Row::new(RowKind::Group, i, 0));
                     self.rows
                         .extend(visible.map(|j| Row::new(RowKind::Session, i, j)));

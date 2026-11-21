@@ -82,7 +82,11 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | `r` | Rescan |
 | `q` | Quit |
 
-Ready and still-probing computers appear first. **Other computers**, below a blank divider, contains sign-in, host-key, missing-tool, and connection failures. These rows remain selectable; filtering searches both sections. Status changes move a computer between sections without changing which computer you have selected.
+The **Browse** sidebar has three sections, separated by blank lines: **Pinned sessions** (shortcuts labeled with their computer), **Computers** (ready or still probing, with sessions nested beneath), and **Other computers** (sign-in, host-key, missing-tool, and connection failures). Empty sections are hidden. Pinning adds a shortcut without removing the session from its computer. Status rows remain selectable; filtering searches both computer sections. Status changes move a computer between sections without changing which computer you have selected.
+
+Computers already reported offline start in **Other computers**, before probing finishes. A successful probe moves them into **Computers** even if Tailscale still reports them offline.
+
+The machine running Delux appears under its operating-system hostname, with a trailing `.local` suffix omitted. Its CLI/configuration identifier remains `local`, so existing pins and mappings keep working.
 
 When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 

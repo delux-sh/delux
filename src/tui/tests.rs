@@ -1556,6 +1556,34 @@ fn sidebar_status_moves_keep_the_selected_computer() {
 }
 
 #[test]
+fn known_offline_computers_start_below_the_divider_but_can_recover() {
+    let working = worker("working", "working");
+    let mut offline = remote("offline", "offline-box", "offline.tail");
+    offline.online = Some(false);
+    // Discovery knows the peer is offline before any SSH result arrives.
+    let mut harness = Harness::new(
+        vec![offline.clone(), working.clone()],
+        vec![ready(&working, vec![session("$0", "work")])],
+    );
+    let view = harness.rendered(100, 20);
+    let divider = view.find("Other computers").expect("offline section");
+    assert!(view.find("working").unwrap() < divider, "{view}");
+    assert!(view.find("offline-box").unwrap() > divider, "{view}");
+    harness.press(&["down"]);
+    assert_eq!(
+        harness.picker.selection,
+        Selection::Computer("offline".into())
+    );
+    // A real successful probe wins over Tailscale's stale offline hint.
+    harness.picker.update(Message::Checked(ready(
+        &offline,
+        vec![session("$1", "recovered")],
+    )));
+    assert_eq!(harness.picker.selected_session().unwrap().0.key, "offline");
+    assert!(!harness.rendered(100, 20).contains("Other computers"));
+}
+
+#[test]
 fn ssh_banners_follow_the_error_they_precede() {
     // OpenSSH 10 prints these before the real failure.
     let detail = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n\
@@ -2802,6 +2830,17 @@ fn pinned_rows_keep_their_computer_visible_in_the_sidebar() {
         assert!(line.ends_with(host), "{host}: {sidebar:#?}");
     }
     assert!(pinned[2].contains("a-really-l") && pinned[2].contains('…'));
+    let computers = sidebar
+        .iter()
+        .position(|line| line.trim() == "Computers")
+        .expect("computer section");
+    assert_eq!(computers, header + 5, "one blank line after the pins");
+    assert!(sidebar[computers - 1].trim().is_empty());
+    assert!(sidebar[computers + 1].contains("studio"));
+    harness.press(&["down", "down", "down", "enter"]);
+    let launched = harness.launched();
+    assert_eq!(launched[0].worker.key, "a");
+    assert_eq!(launched[0].session.as_ref().unwrap().id, "$0");
 }
 
 #[test]
