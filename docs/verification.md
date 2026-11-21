@@ -1,5 +1,27 @@
 # Verification record
 
+## Sidebar availability grouping (November 20, 2026)
+
+The Browse sidebar separates Pinned sessions, Computers, and Other computers with blank lines and omits empty sections. Pinned shortcuts retain their computer label and their ordinary nested session row. Ready and probing computers remain in Computers; authentication, host-trust, missing-tool and connection failures appear in Other computers. Ordering within each section is preserved between explicit rescans; selection follows a computer when its sessions disappear or access returns. Navigation skips section headings and blank rows.
+
+All 84 picker tests passed, including grouping, recovery, filtering, selection and inline sign-in cases; the release build passed. An isolated real-PTY run used a private tmux server and an unresolvable explicit SSH destination, verifying the visible gap, the failure below local work, arrow navigation across the divider, clean exit and session preservation. The throwaway capture driver was corrected to wait for the incremental redraw to finish before inspecting the screen. Fixture sessions and capture scripts were removed; no user sessions were changed.
+
+The three-section follow-up also passed all 84 picker tests and a release build. A live picker in an isolated tmux server displayed all three headings and gaps after pinning a session, retained both its shortcut and nested row, and exited without ending the work session. The smoke assertion was scoped to sidebar rows rather than counting the pin-confirmation notice. Fixture servers and the throwaway driver were removed.
+
+All three section headings use the same muted, non-bold style. The focused pinned-section test and release rebuild passed after this refinement; a live tmux capture confirmed that none of the three heading labels had the bold attribute.
+
+Known-offline peers now start in Other computers during the initial scan rather than briefly appearing in Computers. A successful inventory overrides the offline hint and preserves selection when moving the computer up. All 85 picker tests and the release build passed. A live startup capture showed six actual offline Tailscale peers below the divider while the remaining computers were still probing.
+
+PR review corrected the CLI inventory tests to use a fixed hostname and retained the `local` attachment identifier in plain-text headings (`hostname — local`). It also preserved the selected session's identity through a failed probe; the recovery regression now selects the second session and verifies that it returns instead of jumping to the first. Clippy with warnings denied passed, and a fresh Debug executable printed `d3vbook — local` with an isolated, empty tmux directory.
+
+The local full Rust suite passed 276 tests, including all inventory and picker regressions, with one subprocess fixture ignored. One existing test failed: `cancellation_wait_kills_descendant_process_groups_within_half_a_second` exceeded its 500 ms wall-clock assertion. The cancellation implementation and timing test were not changed or retried; passing CI on the final PR head remains the merge gate.
+
+## iPhone terminal keyboard layout (November 20, 2026)
+
+The terminal accessory row now respects bottom and horizontal safe areas, adding space for the home-indicator area when needed. A UIKit keyboard layout guide bounds the terminal above the keyboard and accessory; SwiftUI no longer applies a second keyboard adjustment.
+
+The Debug simulator build passed. On the 402×874-point review simulator, a live SSH/tmux terminal remained connected while switching keyboard modes. With the hardware keyboard connected, the terminal ended at y=796 and the accessory buttons occupied y=800–836, above the 34-point bottom safe area. With the software keyboard visible, the terminal ended at y=522 and the accessory row began there, with no terminal overlap. Screenshots were inspected in both modes; keyboard dismissal was also exercised. No terminal commands were sent or remote sessions ended. Physical-device and landscape checks were not run.
+
 ## v0.2.0 release validation (November 17, 2026)
 
 The nonpublishing [Release run 44222032589](https://github.com/delux-sh/delux/actions/runs/44222032589) passed on candidate `83e3a46f36811e35d0416c96ff02c7503e0e309b`: Linux/macOS tests and Clippy, minimum Rust, archive build, and all four native Homebrew package jobs. Each platform installed the generated formula with dependencies, passed `brew test` and `brew audit --strict`, and exercised the installed picker. Platforms were macOS Apple Silicon and Intel, and Linux ARM64 and x86_64; none substituted emulation or skipped dependencies.

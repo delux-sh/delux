@@ -24,6 +24,13 @@ brew install delux-sh/tap/delux
 
 [Release archives](https://github.com/delux-sh/delux/releases) cover macOS Apple Silicon and Intel, and Linux ARM64 and x86_64. Homebrew installs tmux and, on Linux, OpenSSH; macOS uses its system OpenSSH. If an older manual installation still runs, check `command -v delux` and your `PATH` so it does not shadow Homebrew's binary.
 
+To upgrade an existing Homebrew installation:
+
+```sh
+brew update
+brew upgrade delux-sh/tap/delux
+```
+
 ### Build from source
 
 You'll need Rust 1.88+ and a C linker—Xcode Command Line Tools on macOS, or your Linux distribution's build tools:
@@ -75,6 +82,12 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | `r` | Rescan |
 | `q` | Quit |
 
+The **Browse** sidebar has three sections, separated by blank lines: **Pinned sessions** (shortcuts labeled with their computer), **Computers** (ready or still probing, with sessions nested beneath), and **Other computers** (sign-in, host-key, missing-tool, and connection failures). Empty sections are hidden. Pinning adds a shortcut without removing the session from its computer. Status rows remain selectable; filtering searches both computer sections. Status changes move a computer between sections without changing which computer you have selected. A selected session is remembered across a failed probe and restored if it returns.
+
+Computers already reported offline start in **Other computers**, before probing finishes. A successful probe moves them into **Computers** even if Tailscale still reports them offline.
+
+The machine running Delux appears under its operating-system hostname, with a trailing `.local` suffix omitted. Its CLI/configuration identifier remains `local`, so existing pins and mappings keep working. The plain-text `delux list` heading includes both, for example `laptop — local`; use `local` with `delux attach`.
+
 When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 
 The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab to interact), and **Active** (Shift-Tab for the list). Inactive borders and titles are muted; session output stays readable.
@@ -83,7 +96,7 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
 
-Press `a` in the list to add an SSH destination such as `alice@build-box` or an alias from `~/.ssh/config`. Enter saves it to `hosts` in the active `cli.json` (including a custom `--config` path), using the destination as both its name and value, just like `--host DEST`. Esc cancels. Delux rescans without reordering existing computers and selects the new computer; adding only probes in the background, never opens an interactive SSH connection. Duplicate names or destinations are rejected. This action is unavailable with `--local` or `--host`, which exclude other configured hosts; restart without those flags to add computers. `--no-local` still allows it.
+Press `a` in the list to add an SSH destination such as `alice@build-box` or an alias from `~/.ssh/config`. Enter saves it to `hosts` in the active `cli.json` (including a custom `--config` path), using the destination as both its name and value, just like `--host DEST`. Esc cancels. Delux rescans, preserving order within each sidebar section, and selects the new computer; adding only probes in the background, never opens an interactive SSH connection. Duplicate names or destinations are rejected. This action is unavailable with `--local` or `--host`, which exclude other configured hosts; restart without those flags to add computers. `--no-local` still allows it.
 
 Duplicate checks include saved computers hidden by `ignore` and mappings saved by another running picker; adding never overwrites an existing mapping.
 

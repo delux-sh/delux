@@ -158,9 +158,12 @@ fn write_host_mapping(
 }
 
 pub fn local_worker() -> Worker {
+    let system = rustix::system::uname();
+    let hostname = system.nodename().to_bytes();
+    let name = hostname.strip_suffix(b".local").unwrap_or(hostname);
     Worker {
         key: "local".into(),
-        name: "local".into(),
+        name: String::from_utf8_lossy(name).into_owned(),
         destination: None,
         online: Some(true),
     }

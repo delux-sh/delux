@@ -136,7 +136,7 @@ impl Picker {
                 tint.border()
             })
             .title(Line::styled(
-                format!(" Computers · {computers} "),
+                " Browse ",
                 if sidebar_inactive {
                     theme::inactive_sidebar()
                 } else {
@@ -688,7 +688,10 @@ impl Picker {
             .map(|row| {
                 let entry = &self.entries[row.entry];
                 let spans = match row.kind {
-                    RowKind::PinnedHeader => vec![Span::styled("Pinned", heading)],
+                    RowKind::PinnedHeader => vec![Span::styled("Pinned sessions", secondary)],
+                    RowKind::Separator => Vec::new(),
+                    RowKind::ComputersHeader => vec![Span::styled("Computers", secondary)],
+                    RowKind::OtherHeader => vec![Span::styled("Other computers", secondary)],
                     RowKind::Group => vec![Span::styled(
                         fit_name(&entry.worker.name, content_width),
                         heading,

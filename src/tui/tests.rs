@@ -1463,6 +1463,147 @@ fn unified_list_includes_sessions_and_computers_without_sessions() {
 }
 
 #[test]
+fn sidebar_groups_unavailable_computers_and_skips_the_divider() {
+    let up = worker("up", "working");
+    let empty = remote("empty", "empty", "empty.tail");
+    let probing = remote("probing", "probing", "probing.tail");
+    let statuses = [
+        ("auth", Status::AuthRequired),
+        ("trust", Status::HostTrust),
+        ("tmux", Status::MissingTmux),
+        ("tools", Status::MissingTools),
+        ("probe", Status::ProbeFailed),
+        ("unreachable", Status::Unreachable),
+    ];
+    let mut workers = vec![up.clone(), empty.clone(), probing];
+    let mut inventories = vec![
+        ready(&up, vec![session("$0", "work")]),
+        ready(&empty, vec![]),
+    ];
+    for (name, status) in statuses {
+        let worker = remote(name, name, &format!("{name}.tail"));
+        inventories.push(failed(&worker, status, "Access unavailable"));
+        workers.push(worker);
+    }
+    let mut harness = Harness::new(workers, inventories);
+    let view = harness.rendered(100, 30);
+    let divider = view.find("Other computers").expect("unavailable section");
+    for name in ["working", "empty", "probing"] {
+        assert!(view.find(name).unwrap() < divider, "{name}:\n{view}");
+    }
+    for (name, _) in statuses {
+        assert!(view.find(name).unwrap() > divider, "{name}:\n{view}");
+    }
+    let lines: Vec<_> = view.lines().collect();
+    let heading = lines
+        .iter()
+        .position(|line| line.contains("Other computers"))
+        .unwrap();
+    assert!(
+        lines[heading - 1]
+            .chars()
+            .skip(1)
+            .take(30)
+            .all(|ch| ch == ' '),
+        "a blank sidebar line separates the sections:\n{view}"
+    );
+    harness.press(&["/", "empty", "enter", "esc", "down"]);
+    assert_eq!(harness.picker.selection, Selection::Computer("auth".into()));
+    harness.press(&["up"]);
+    assert_eq!(
+        harness.picker.selection,
+        Selection::Computer("empty".into())
+    );
+    harness.press(&["/", "working"]);
+    assert!(!harness.rendered(100, 20).contains("Other computers"));
+    harness.press(&["esc", "/", "auth"]);
+    let view = harness.rendered(100, 20);
+    assert!(
+        view.lines().nth(2).unwrap().contains("Other computers"),
+        "{view}"
+    );
+    harness.press(&["enter", "enter"]);
+    assert_eq!(harness.picker.input.as_ref().unwrap().key, "auth");
+}
+
+#[test]
+fn sidebar_status_moves_keep_the_selected_computer() {
+    let working = worker("working", "working");
+    let recovering = remote("recovering", "recovering", "recovering.tail");
+    let mut harness = Harness::new(
+        vec![working.clone(), recovering.clone()],
+        vec![
+            ready(&working, vec![session("$0", "work")]),
+            failed(&recovering, Status::AuthRequired, "Sign in"),
+        ],
+    );
+    harness.press(&["down"]);
+    assert_eq!(
+        harness.picker.selection,
+        Selection::Computer("recovering".into())
+    );
+    harness.picker.update(Message::Checked(ready(
+        &recovering,
+        vec![session("$1", "first"), session("$2", "recovered")],
+    )));
+    assert_eq!(
+        harness.picker.selected_session().unwrap().0.key,
+        "recovering"
+    );
+    assert!(!harness.rendered(100, 20).contains("Other computers"));
+    harness.press(&["down"]);
+    let selected = harness.picker.selection.clone();
+    harness.picker.update(Message::Checked(failed(
+        &recovering,
+        Status::Unreachable,
+        "Connection lost",
+    )));
+    let row = harness.picker.current_row().unwrap();
+    assert!(row.kind == RowKind::Computer);
+    assert_eq!(harness.picker.entries[row.entry].worker.key, "recovering");
+    assert_eq!(harness.picker.selection, selected);
+    harness.picker.update(Message::Checked(ready(
+        &recovering,
+        vec![session("$1", "first"), session("$2", "recovered")],
+    )));
+    assert_eq!(harness.picker.selection, selected);
+    assert_eq!(
+        harness.picker.selected_session().unwrap().1.name,
+        "recovered"
+    );
+    harness.press(&["up", "up", "enter"]);
+    assert_eq!(harness.launched()[0].worker.key, "working");
+}
+
+#[test]
+fn known_offline_computers_start_below_the_divider_but_can_recover() {
+    let working = worker("working", "working");
+    let mut offline = remote("offline", "offline-box", "offline.tail");
+    offline.online = Some(false);
+    // Discovery knows the peer is offline before any SSH result arrives.
+    let mut harness = Harness::new(
+        vec![offline.clone(), working.clone()],
+        vec![ready(&working, vec![session("$0", "work")])],
+    );
+    let view = harness.rendered(100, 20);
+    let divider = view.find("Other computers").expect("offline section");
+    assert!(view.find("working").unwrap() < divider, "{view}");
+    assert!(view.find("offline-box").unwrap() > divider, "{view}");
+    harness.press(&["down"]);
+    assert_eq!(
+        harness.picker.selection,
+        Selection::Computer("offline".into())
+    );
+    // A real successful probe wins over Tailscale's stale offline hint.
+    harness.picker.update(Message::Checked(ready(
+        &offline,
+        vec![session("$1", "recovered")],
+    )));
+    assert_eq!(harness.picker.selected_session().unwrap().0.key, "offline");
+    assert!(!harness.rendered(100, 20).contains("Other computers"));
+}
+
+#[test]
 fn ssh_banners_follow_the_error_they_precede() {
     // OpenSSH 10 prints these before the real failure.
     let detail = "** WARNING: connection is not using a post-quantum key exchange algorithm.\n\
@@ -1505,12 +1646,12 @@ fn unified_list_orders_computers_and_authenticates_inline() {
         ],
     );
     let view = harness.rendered(100, 20);
-    let order: Vec<usize> = ["has-work", "needs-key", "no-work", "gone"]
+    let order: Vec<usize> = ["has-work", "no-work", "needs-key", "gone"]
         .iter()
         .map(|name| view.find(name).unwrap_or_else(|| panic!("{name}:\n{view}")))
         .collect();
     assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{view}");
-    harness.press(&["down"]);
+    harness.press(&["down", "down"]);
     let view = harness.rendered(160, 30);
     assert!(
         view.contains("Permission denied") && view.contains("Press u"),
@@ -1524,7 +1665,7 @@ fn unified_list_orders_computers_and_authenticates_inline() {
     assert_eq!(launched[0].worker.key, "auth");
     assert!(launched[0].session.is_none());
     // Enter on an empty computer opens a form without creating anything.
-    harness.press(&["down", "enter"]);
+    harness.press(&["up", "enter"]);
     assert_eq!(harness.launched().len(), 1);
     assert_eq!(
         harness.picker.creation.as_ref().unwrap().worker.key,
@@ -1661,7 +1802,7 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
     );
     assert_order(
         &mut harness,
-        &["alpha", "first", "second", "removed", "gamma", "beta"],
+        &["alpha", "first", "second", "removed", "beta", "gamma"],
     );
     harness.press(&["down"]);
     let selection = harness.picker.selection.clone();
@@ -1680,7 +1821,7 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
     harness.press(&["/", "second", "esc"]);
     assert_order(
         &mut harness,
-        &["first", "second", "removed", "gamma", "beta"],
+        &["first", "second", "removed", "beta", "gamma"],
     );
     assert_eq!(harness.picker.selection, selection);
     // Status changes expand a computer in place instead of promoting it.
@@ -1693,7 +1834,7 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
         .update(Message::Checked(ready(&beta, vec![beta_older, beta_newer])));
     assert_order(
         &mut harness,
-        &["alpha", "gamma", "beta", "beta-newer", "beta-older"],
+        &["alpha", "beta", "beta-newer", "beta-older", "gamma"],
     );
     assert_eq!(harness.picker.selection, selection);
 
@@ -1737,7 +1878,7 @@ fn refresh_detach_and_filter_keep_order_until_explicit_rescan() {
     assert_order(
         &mut harness,
         &[
-            "alpha", "newest", "second", "added", "first", "delta", "beta",
+            "alpha", "newest", "second", "added", "first", "beta", "delta",
         ],
     );
     assert_eq!(harness.picker.selection, selection);
@@ -2709,6 +2850,17 @@ fn pinned_rows_keep_their_computer_visible_in_the_sidebar() {
         assert!(line.ends_with(host), "{host}: {sidebar:#?}");
     }
     assert!(pinned[2].contains("a-really-l") && pinned[2].contains('…'));
+    let computers = sidebar
+        .iter()
+        .position(|line| line.trim() == "Computers")
+        .expect("computer section");
+    assert_eq!(computers, header + 5, "one blank line after the pins");
+    assert!(sidebar[computers - 1].trim().is_empty());
+    assert!(sidebar[computers + 1].contains("studio"));
+    harness.press(&["down", "down", "down", "enter"]);
+    let launched = harness.launched();
+    assert_eq!(launched[0].worker.key, "a");
+    assert_eq!(launched[0].session.as_ref().unwrap().id, "$0");
 }
 
 #[test]
