@@ -82,6 +82,8 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | `r` | Rescan |
 | `q` | Quit |
 
+Ready and still-probing computers appear first. **Other computers**, below a blank divider, contains sign-in, host-key, missing-tool, and connection failures. These rows remain selectable; filtering searches both sections. Status changes move a computer between sections without changing which computer you have selected.
+
 When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 
 The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab to interact), and **Active** (Shift-Tab for the list). Inactive borders and titles are muted; session output stays readable.
@@ -90,7 +92,7 @@ Scroll with the pointer over the focused panel. Scrolling over an inactive previ
 
 **Sign in** and **Trust key** show the **remote username** before connecting. It comes from your saved `user@host` destination or SSH settings/default; confirm it rather than assuming a saved key identifies the account. Ctrl-U changes it; Enter confirms and opens SSH prompts. Only username overrides are saved to Delux. Passwords stay hidden; Ctrl-C cancels sign-in. Verify host-key fingerprints before accepting them.
 
-Press `a` in the list to add an SSH destination such as `alice@build-box` or an alias from `~/.ssh/config`. Enter saves it to `hosts` in the active `cli.json` (including a custom `--config` path), using the destination as both its name and value, just like `--host DEST`. Esc cancels. Delux rescans without reordering existing computers and selects the new computer; adding only probes in the background, never opens an interactive SSH connection. Duplicate names or destinations are rejected. This action is unavailable with `--local` or `--host`, which exclude other configured hosts; restart without those flags to add computers. `--no-local` still allows it.
+Press `a` in the list to add an SSH destination such as `alice@build-box` or an alias from `~/.ssh/config`. Enter saves it to `hosts` in the active `cli.json` (including a custom `--config` path), using the destination as both its name and value, just like `--host DEST`. Esc cancels. Delux rescans, preserving order within each sidebar section, and selects the new computer; adding only probes in the background, never opens an interactive SSH connection. Duplicate names or destinations are rejected. This action is unavailable with `--local` or `--host`, which exclude other configured hosts; restart without those flags to add computers. `--no-local` still allows it.
 
 Duplicate checks include saved computers hidden by `ignore` and mappings saved by another running picker; adding never overwrites an existing mapping.
 

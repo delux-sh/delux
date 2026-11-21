@@ -1,5 +1,17 @@
 # Verification record
 
+## Sidebar availability grouping (November 20, 2026)
+
+Ready and probing computers remain above a blank divider and an Other computers heading. Authentication, host-trust, missing-tool and connection failures appear below it. Ordering within each section is preserved between explicit rescans; selection follows a computer when its sessions disappear or access returns. Filtering omits empty sections, and navigation skips the divider and heading.
+
+All 84 picker tests passed, including grouping, recovery, filtering, selection and inline sign-in cases; the release build passed. An isolated real-PTY run used a private tmux server and an unresolvable explicit SSH destination, verifying the visible gap, the failure below local work, arrow navigation across the divider, clean exit and session preservation. The throwaway capture driver was corrected to wait for the incremental redraw to finish before inspecting the screen. Fixture sessions and capture scripts were removed; no user sessions were changed.
+
+## iPhone terminal keyboard layout (November 20, 2026)
+
+The terminal accessory row now respects bottom and horizontal safe areas, adding space for the home-indicator area when needed. A UIKit keyboard layout guide bounds the terminal above the keyboard and accessory; SwiftUI no longer applies a second keyboard adjustment.
+
+The Debug simulator build passed. On the 402×874-point review simulator, a live SSH/tmux terminal remained connected while switching keyboard modes. With the hardware keyboard connected, the terminal ended at y=796 and the accessory buttons occupied y=800–836, above the 34-point bottom safe area. With the software keyboard visible, the terminal ended at y=522 and the accessory row began there, with no terminal overlap. Screenshots were inspected in both modes; keyboard dismissal was also exercised. No terminal commands were sent or remote sessions ended. Physical-device and landscape checks were not run.
+
 ## v0.2.0 release validation (November 17, 2026)
 
 The nonpublishing [Release run 44222032589](https://github.com/delux-sh/delux/actions/runs/44222032589) passed on candidate `83e3a46f36811e35d0416c96ff02c7503e0e309b`: Linux/macOS tests and Clippy, minimum Rust, archive build, and all four native Homebrew package jobs. Each platform installed the generated formula with dependencies, passed `brew test` and `brew audit --strict`, and exercised the installed picker. Platforms were macOS Apple Silicon and Intel, and Linux ARM64 and x86_64; none substituted emulation or skipped dependencies.

@@ -75,6 +75,8 @@ struct Services {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RowKind {
     PinnedHeader,
+    Separator,
+    OtherHeader,
     Pinned,
     /// A computer's heading above its sessions.
     Group,
@@ -1129,28 +1131,39 @@ impl Picker {
                 self.rows.extend(pinned);
             }
         }
-        for i in 0..self.entries.len() {
-            let entry = &self.entries[i];
-            let worker_match = query.is_empty()
-                || matches(&entry.worker.name)
-                || entry.worker.destination.as_deref().is_some_and(matches);
-            let sessions = entry.sessions();
-            if sessions.is_empty() {
-                if worker_match {
-                    self.rows.push(Row::new(RowKind::Computer, i, 0));
+        // Keep discovery/rescan order within each section. Only availability
+        // moves a computer across the divider during background updates.
+        for other in [false, true] {
+            let mut heading_added = false;
+            for (i, entry) in self.entries.iter().enumerate() {
+                if other == matches!(entry.status(), Status::Ready | Status::Scanning) {
+                    continue;
                 }
-                continue;
-            }
-            let visible: Vec<usize> = (0..sessions.len())
-                .filter(|&j| worker_match || matches(&sessions[j].name))
-                .collect();
-            if !visible.is_empty() {
-                self.rows.push(Row::new(RowKind::Group, i, 0));
-                self.rows.extend(
-                    visible
-                        .into_iter()
-                        .map(|j| Row::new(RowKind::Session, i, j)),
-                );
+                let worker_match = query.is_empty()
+                    || matches(&entry.worker.name)
+                    || entry.worker.destination.as_deref().is_some_and(matches);
+                let sessions = entry.sessions();
+                if sessions.is_empty() {
+                    if worker_match {
+                        if other && !heading_added {
+                            if !self.rows.is_empty() {
+                                self.rows.push(Row::new(RowKind::Separator, i, 0));
+                            }
+                            self.rows.push(Row::new(RowKind::OtherHeader, i, 0));
+                            heading_added = true;
+                        }
+                        self.rows.push(Row::new(RowKind::Computer, i, 0));
+                    }
+                    continue;
+                }
+                let mut visible = (0..sessions.len())
+                    .filter(|&j| worker_match || matches(&sessions[j].name))
+                    .peekable();
+                if visible.peek().is_some() {
+                    self.rows.push(Row::new(RowKind::Group, i, 0));
+                    self.rows
+                        .extend(visible.map(|j| Row::new(RowKind::Session, i, j)));
+                }
             }
         }
         for (i, row) in self.rows.iter().copied().enumerate() {
@@ -1159,10 +1172,15 @@ impl Picker {
                 return;
             }
         }
-        // A selected status row becomes a heading when its sessions arrive.
-        if let Selection::Computer(worker) = &self.selection
+        // Follow the same computer when sessions arrive or access is lost.
+        let replacement = match &self.selection {
+            Selection::Computer(worker) => Some((worker, RowKind::Session)),
+            Selection::Session { worker, .. } => Some((worker, RowKind::Computer)),
+            Selection::None => None,
+        };
+        if let Some((worker, kind)) = replacement
             && let Some(index) = self.rows.iter().position(|row| {
-                row.kind == RowKind::Session && self.entries[row.entry].worker.key == *worker
+                row.kind == kind && self.entries[row.entry].worker.key == *worker
             })
         {
             self.cursor = Some(index);

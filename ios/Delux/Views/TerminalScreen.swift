@@ -12,8 +12,8 @@ struct TerminalScreen: View {
                 ConnectionBanner(banner: banner, controller: controller)
             }
             TerminalHostView(controller: controller, isConnected: controller.state.isConnected, keyboardShown: $keyboardShown)
-                .ignoresSafeArea(.container, edges: .bottom)
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

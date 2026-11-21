@@ -689,6 +689,8 @@ impl Picker {
                 let entry = &self.entries[row.entry];
                 let spans = match row.kind {
                     RowKind::PinnedHeader => vec![Span::styled("Pinned", heading)],
+                    RowKind::Separator => Vec::new(),
+                    RowKind::OtherHeader => vec![Span::styled("Other computers", secondary)],
                     RowKind::Group => vec![Span::styled(
                         fit_name(&entry.worker.name, content_width),
                         heading,

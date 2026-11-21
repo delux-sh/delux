@@ -13,7 +13,7 @@ struct TerminalHostView: UIViewRepresentable {
         Coordinator(controller: controller, keyboardShown: $keyboardShown)
     }
 
-    func makeUIView(context: Context) -> DeluxTerminalView {
+    func makeUIView(context: Context) -> TerminalContainerView {
         let view = DeluxTerminalView(frame: .zero, font: UIFont.monospacedSystemFont(ofSize: 13, weight: .regular))
         view.terminalDelegate = context.coordinator
         view.accessibilityIdentifier = AccessibilityID.terminal
@@ -28,10 +28,11 @@ struct TerminalHostView: UIViewRepresentable {
             view?.feed(byteArray: ArraySlice(data))
         }
         context.coordinator.observeKeyboard(for: view)
-        return view
+        return TerminalContainerView(terminal: view)
     }
 
-    func updateUIView(_ view: DeluxTerminalView, context: Context) {
+    func updateUIView(_ container: TerminalContainerView, context: Context) {
+        let view = container.terminal
         let coordinator = context.coordinator
         if isConnected, !coordinator.didFocusAfterConnect {
             coordinator.didFocusAfterConnect = true
@@ -54,7 +55,8 @@ struct TerminalHostView: UIViewRepresentable {
         }
     }
 
-    static func dismantleUIView(_ view: DeluxTerminalView, coordinator: Coordinator) {
+    static func dismantleUIView(_ container: TerminalContainerView, coordinator: Coordinator) {
+        let view = container.terminal
         coordinator.stopObserving()
         coordinator.detachOutput()
         view.onGridChange = nil
@@ -138,6 +140,30 @@ struct TerminalHostView: UIViewRepresentable {
     }
 }
 
+/// UIKit owns keyboard avoidance so the terminal grid ends above the accessory
+/// in both software- and hardware-keyboard modes.
+final class TerminalContainerView: UIView {
+    let terminal: DeluxTerminalView
+
+    init(terminal: DeluxTerminalView) {
+        self.terminal = terminal
+        super.init(frame: .zero)
+        terminal.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(terminal)
+        NSLayoutConstraint.activate([
+            terminal.leadingAnchor.constraint(equalTo: leadingAnchor),
+            terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
+            terminal.topAnchor.constraint(equalTo: topAnchor),
+            terminal.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+}
+
 /// Reports the emulator grid after every layout so the first attach uses the
 /// real size even when it happens to equal SwiftTerm's 80x25 default.
 final class DeluxTerminalView: TerminalView {
@@ -187,7 +213,12 @@ final class TerminalAccessoryBar: UIInputView, UIInputViewAudioFeedback {
     var enableInputClicksWhenVisible: Bool { true }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: 44)
+        CGSize(width: UIView.noIntrinsicMetric, height: 44 + safeAreaInsets.bottom)
+    }
+
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        invalidateIntrinsicContentSize()
     }
 
     private func buildKeys() {
@@ -223,18 +254,18 @@ final class TerminalAccessoryBar: UIInputView, UIInputViewAudioFeedback {
         addSubview(hide)
         hide.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Spacing.sm),
+            scroll.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: Spacing.sm),
             scroll.trailingAnchor.constraint(equalTo: hide.leadingAnchor, constant: -Spacing.sm),
             scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: Spacing.xs),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -Spacing.xs),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -2 * Spacing.xs),
-            hide.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Spacing.sm),
+            hide.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -Spacing.sm),
             hide.topAnchor.constraint(equalTo: topAnchor, constant: Spacing.xs),
-            hide.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Spacing.xs),
+            hide.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -Spacing.xs),
         ])
     }
 
