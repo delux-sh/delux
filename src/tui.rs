@@ -1193,9 +1193,10 @@ impl Picker {
             Selection::None => None,
         };
         if let Some((worker, kind)) = replacement
-            && let Some(index) = self.rows.iter().position(|row| {
-                row.kind == kind && self.entries[row.entry].worker.key == *worker
-            })
+            && let Some(index) = self
+                .rows
+                .iter()
+                .position(|row| row.kind == kind && self.entries[row.entry].worker.key == *worker)
         {
             self.cursor = Some(index);
             self.remember();

@@ -1476,7 +1476,10 @@ fn sidebar_groups_unavailable_computers_and_skips_the_divider() {
         ("unreachable", Status::Unreachable),
     ];
     let mut workers = vec![up.clone(), empty.clone(), probing];
-    let mut inventories = vec![ready(&up, vec![session("$0", "work")]), ready(&empty, vec![])];
+    let mut inventories = vec![
+        ready(&up, vec![session("$0", "work")]),
+        ready(&empty, vec![]),
+    ];
     for (name, status) in statuses {
         let worker = remote(name, name, &format!("{name}.tail"));
         inventories.push(failed(&worker, status, "Access unavailable"));
@@ -1507,7 +1510,10 @@ fn sidebar_groups_unavailable_computers_and_skips_the_divider() {
     harness.press(&["/", "empty", "enter", "esc", "down"]);
     assert_eq!(harness.picker.selection, Selection::Computer("auth".into()));
     harness.press(&["up"]);
-    assert_eq!(harness.picker.selection, Selection::Computer("empty".into()));
+    assert_eq!(
+        harness.picker.selection,
+        Selection::Computer("empty".into())
+    );
     harness.press(&["/", "working"]);
     assert!(!harness.rendered(100, 20).contains("Other computers"));
     harness.press(&["esc", "/", "auth"]);
@@ -1540,7 +1546,10 @@ fn sidebar_status_moves_keep_the_selected_computer() {
         &recovering,
         vec![session("$1", "recovered")],
     )));
-    assert_eq!(harness.picker.selected_session().unwrap().0.key, "recovering");
+    assert_eq!(
+        harness.picker.selected_session().unwrap().0.key,
+        "recovering"
+    );
     assert!(!harness.rendered(100, 20).contains("Other computers"));
     harness.picker.update(Message::Checked(failed(
         &recovering,
