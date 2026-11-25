@@ -196,6 +196,12 @@ impl Picker {
         None
     }
 
+    fn stop_directory_completion(&mut self) {
+        if let Some(cancel) = self.directory_completion_pending.take() {
+            cancel.cancel();
+        }
+    }
+
     pub(super) fn start_creation(&mut self) {
         if self.ending_pending.is_some() {
             self.notice = "Waiting for the end-session request to settle…".into();
@@ -221,15 +227,22 @@ impl Picker {
         let directory = self
             .session(row)
             .map_or("", |session| session.path.as_str());
-        self.creation = Some(SessionForm::new(entry.worker.clone(), directory.to_owned()));
+        let directory = directory.to_owned();
+        let worker = entry.worker.clone();
+        self.stop_directory_completion();
+        self.creation = Some(SessionForm::new(worker, directory));
         self.terminal_focused = false;
         self.notice.clear();
     }
 
     fn creation_key(&mut self, key: KeyEvent) -> Option<Command> {
-        let action = self.creation.as_mut()?.key(key)?;
-        match action {
+        let action = self.creation.as_mut()?.key(key);
+        if !self.creation.as_ref()?.directory_completion_pending() {
+            self.stop_directory_completion();
+        }
+        match action? {
             FormAction::Cancel => {
+                self.stop_directory_completion();
                 self.creation = None;
                 if let Some(cancel) = &self.creation_pending {
                     cancel.cancel();
@@ -241,6 +254,7 @@ impl Picker {
                 None
             }
             FormAction::Submit(request) => {
+                self.stop_directory_completion();
                 let form = self.creation.as_mut()?;
                 if self.scanning {
                     form.busy = false;
@@ -261,6 +275,33 @@ impl Picker {
                 Some(Command::Create {
                     worker: form.worker.clone(),
                     request,
+                    cancel,
+                })
+            }
+            FormAction::CompleteDirectory(path) => {
+                let worker = self.creation.as_ref()?.worker.clone();
+                self.stop_directory_completion();
+                if !self.entries.iter().any(|entry| {
+                    entry.worker.key == worker.key
+                        && entry.worker.destination == worker.destination
+                        && entry.status() == Status::Ready
+                }) {
+                    self.creation.as_mut()?.complete_directory(
+                        &path,
+                        Err(
+                            "Computer is no longer ready. Check the connection and try again."
+                                .into(),
+                        ),
+                    );
+                    return None;
+                }
+                self.directory_completion_epoch = self.directory_completion_epoch.wrapping_add(1);
+                let cancel = self.cancel.child();
+                self.directory_completion_pending = Some(cancel.clone());
+                Some(Command::CompleteDirectory {
+                    epoch: self.directory_completion_epoch,
+                    worker,
+                    path,
                     cancel,
                 })
             }
@@ -457,6 +498,9 @@ impl Picker {
         }
         if let Some(form) = &mut self.creation {
             form.paste(text);
+            if !form.directory_completion_pending() {
+                self.stop_directory_completion();
+            }
             return None;
         }
         if self.terminal_focused {

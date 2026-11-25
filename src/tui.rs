@@ -268,6 +268,12 @@ impl Drop for UserInput {
 }
 
 enum Message {
+    DirectoryCompleted {
+        epoch: u64,
+        worker: Worker,
+        path: String,
+        result: Result<crate::directory_completion::DirectoryCompletion, String>,
+    },
     ReportingSetup {
         epoch: u64,
         worker: Worker,
@@ -316,6 +322,12 @@ enum Message {
 }
 
 enum Command {
+    CompleteDirectory {
+        epoch: u64,
+        worker: Worker,
+        path: String,
+        cancel: Cancel,
+    },
     ReportingSetup {
         epoch: u64,
         cancel: Cancel,
@@ -391,6 +403,8 @@ struct Picker {
     input: Option<UserInput>,
     creation: Option<SessionForm>,
     creation_pending: Option<Cancel>,
+    directory_completion_epoch: u64,
+    directory_completion_pending: Option<Cancel>,
     ending: Option<EndConfirmation>,
     ending_pending: Option<Cancel>,
     add_input: Option<String>,
@@ -464,6 +478,8 @@ impl Picker {
             input: None,
             creation: None,
             creation_pending: None,
+            directory_completion_epoch: 0,
+            directory_completion_pending: None,
             ending: None,
             ending_pending: None,
             add_input: None,
@@ -525,6 +541,37 @@ impl Picker {
 
     fn update(&mut self, message: Message) -> Option<Command> {
         match message {
+            Message::DirectoryCompleted {
+                epoch,
+                worker,
+                path,
+                result,
+            } => {
+                if epoch != self.directory_completion_epoch {
+                    return None;
+                }
+                let pending = self.directory_completion_pending.take()?;
+                if pending.is_cancelled() {
+                    return None;
+                }
+                let form = self.creation.as_mut()?;
+                if form.worker.key != worker.key || form.worker.destination != worker.destination {
+                    return None;
+                }
+                let unchanged = self.entries.iter().any(|entry| {
+                    entry.worker.key == worker.key
+                        && entry.worker.destination == worker.destination
+                        && entry.status() == Status::Ready
+                });
+                form.complete_directory(
+                    &path,
+                    if unchanged {
+                        result
+                    } else {
+                        Err("Computer changed or is no longer ready. Check the connection and try again.".into())
+                    },
+                );
+            }
             Message::ReportingSetup {
                 epoch,
                 worker,

@@ -5,6 +5,7 @@ mod ansi;
 mod app;
 mod cancel;
 mod crt;
+mod directory_completion;
 mod display;
 mod embedded;
 mod exit_codes;

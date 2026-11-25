@@ -1,5 +1,16 @@
 # Verification record
 
+## CLI new-session directory completion
+
+Tab in Directory performs a read-only lookup on the selected computer, locally or over existing noninteractive SSH. Unique matches fill a trailing slash; complete ambiguous results extend the common prefix and list choices. Partial results never infer a prefix. Up/Down changes fields. Editing, submitting or closing the form invalidates pending results; reopening an identical form cannot accept an earlier reply.
+
+- Eight directory-lookup regressions passed, covering literal shell metacharacters, Unicode/spaces, hidden entries, directory symlinks, missing/inaccessible parents, bounded replies and invalid protocol data. One initial fixture attempted a non-UTF-8 filename on APFS; that byte-validity check now exercises the wire parser directly, while control-character filenames still exercise the actual shell.
+- All 15 form tests and 107 CLI component tests passed, including delayed responses, edit-back invalidation, changed remote identities, truncated matches and tiny viewports. Formatting and the macOS ARM64 release build passed.
+- An isolated running release displayed ambiguous and missing local paths, completed spaces and literal command-substitution text without executing it, and created a local session in the selected directory. A real loopback SSH connection completed and created a session on the remote fixture in its selected directory; it did not create that session on the local fixture. Completion preserved the already-attached remote client.
+- The actual CLI was inspected at 130×34 and 55×15. The smaller layout retained the focused path and existence feedback. A controlled SSH failure displayed a lookup error distinct from no matches; cancellation created no session. Private tmux/SSH fixtures and the throwaway smoke script were removed.
+
+This change is CLI-only. It has not been published to Homebrew and does not change iPhone directory entry.
+
 ## v0.3.0 release (November 25, 2026)
 
 [Delux v0.3.0](https://github.com/delux-sh/delux/releases/tag/v0.3.0) was published from approved commit `f7f48acb59340fd7b6081147520a55b25c7cfa0c`, merged into protected main through PR #19.

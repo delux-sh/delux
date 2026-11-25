@@ -232,6 +232,9 @@ impl Harness {
                     result,
                 })
             }
+            Command::CompleteDirectory { .. } => {
+                panic!("Directory completion tests must deliver their response explicitly")
+            }
             Command::Create { .. } => {
                 panic!("Creation tests must deliver their completion explicitly")
             }
@@ -4502,4 +4505,163 @@ fn browse_attention_removal_hides_empty_section_without_retargeting_enter() {
         row.kind,
         RowKind::NeedsInputHeader | RowKind::AttentionSession
     )));
+}
+
+#[test]
+fn directory_completion_does_not_overwrite_edits_or_disconnect_the_client() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["n", "new-work", "tab"]);
+    let Some(Command::CompleteDirectory {
+        epoch,
+        worker,
+        path,
+        cancel,
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected directory lookup");
+    };
+    harness.press(&["x", "backspace"]);
+    assert!(cancel.is_cancelled());
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch,
+        worker,
+        path,
+        result: Ok(crate::directory_completion::DirectoryCompletion {
+            path: "~/".into(),
+            exists: true,
+            matches: vec!["~/unwanted/".into()],
+            truncated: false,
+        }),
+    });
+    let Some(Command::Create { request, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(request.directory, "~");
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn directory_completion_reopened_form_rejects_old_reply_and_uses_exact_remote_path() {
+    let computer = remote("box", "box", "alice@box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![session("$0", "work")])],
+    );
+    harness.press(&["n", "old-work", "tab"]);
+    let Some(Command::CompleteDirectory {
+        epoch: old_epoch,
+        cancel: old_cancel,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected first lookup");
+    };
+    harness.press(&["esc", "n", "new-work", "tab"]);
+    assert!(old_cancel.is_cancelled());
+    let Some(Command::CompleteDirectory {
+        epoch,
+        worker,
+        path,
+        cancel,
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected second lookup");
+    };
+    assert_eq!(worker, computer);
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch: old_epoch,
+        worker: worker.clone(),
+        path: path.clone(),
+        result: Err("old connection failed".into()),
+    });
+    assert!(!cancel.is_cancelled());
+    assert!(
+        harness
+            .picker
+            .creation
+            .as_ref()
+            .unwrap()
+            .directory_completion_pending()
+    );
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch,
+        worker,
+        path,
+        result: Ok(crate::directory_completion::DirectoryCompletion {
+            path: "~/".into(),
+            exists: true,
+            matches: vec!["~/Projects with spaces/".into()],
+            truncated: false,
+        }),
+    });
+    let Some(Command::Create {
+        worker, request, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(worker, computer);
+    assert_eq!(request.name, "new-work");
+    assert_eq!(request.directory, "~/Projects with spaces/");
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn directory_completion_rejects_a_changed_computer() {
+    let computer = remote("box", "box", "alice@box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![session("$0", "work")])],
+    );
+    harness.press(&["n", "new-work", "tab"]);
+    let Some(Command::CompleteDirectory {
+        epoch,
+        worker,
+        path,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected lookup");
+    };
+    harness.picker.entries[0].worker.destination = Some("bob@box".into());
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch,
+        worker,
+        path,
+        result: Ok(crate::directory_completion::DirectoryCompletion {
+            path: "~/".into(),
+            exists: true,
+            matches: vec!["~/wrong-account/".into()],
+            truncated: false,
+        }),
+    });
+    assert!(
+        !harness
+            .picker
+            .creation
+            .as_ref()
+            .unwrap()
+            .directory_completion_pending()
+    );
+    harness.press(&["enter"]);
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(harness.launched().is_empty());
 }
