@@ -1,5 +1,15 @@
 # Verification record
 
+## v0.3.0 release (November 25, 2026)
+
+[Delux v0.3.0](https://github.com/delux-sh/delux/releases/tag/v0.3.0) was published from approved commit `f7f48acb59340fd7b6081147520a55b25c7cfa0c`, merged into protected main through PR #19.
+
+The [nonpublishing validation](https://github.com/delux-sh/delux/actions/runs/45542367764) and [tagged release workflow](https://github.com/delux-sh/delux/actions/runs/45547573084) both passed Rust CI, minimum-version checks, archive generation and all four native package jobs: macOS Apple Silicon/Intel and Linux ARM64/x86_64. Each installed the generated formula with dependencies, ran `brew test` and `brew audit --strict`, and exercised the installed picker in isolated tmux sessions. Intel macOS built dependencies from source; no architecture was emulated or skipped.
+
+Downloaded validation artifacts had matching checksums, complete license notices and the committed release notes. After the release-environment gate was explicitly approved, publication and provenance attestation succeeded. All four archives were downloaded again from the published release and checked against its published `SHA256SUMS`; those checksums, not the dry-run artifacts, generated the [tap update](https://github.com/delux-sh/homebrew-tap/pull/5).
+
+The existing agent-reporting and iPhone limitations below remain unchanged; package verification does not establish real model-generated OMP asks or iOS binary distribution.
+
 ## Inline Attention in CLI Browse
 
 Browse now places up to nine numbered waiting sessions above pins and computers, hides that section when empty, and keeps the full Attention view on `v`. Numeric shortcuts use the displayed filtered queue; terminal, form and filter input retain precedence. Status and pin columns are separate, and nonempty Browse sections have one blank row between them.
