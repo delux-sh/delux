@@ -35,6 +35,12 @@ targets:
     platform: iOS
     sources:
       - path: Delux
+      - path: ../adapters/reporting_setup.py
+        buildPhase: resources
+      - path: ../adapters/pi/delux-agent-status.ts
+        buildPhase: resources
+      - path: ../adapters/opencode/delux-agent-status.js
+        buildPhase: resources
     dependencies:
       - package: swift-nio-ssh
         product: NIOSSH
@@ -53,8 +59,9 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Delux/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Delux
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Delux connects over SSH to the computers you add, including hosts on your local network or a VPN such as Tailscale.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Delux discovers nearby SSH computers and connects to computers you add on your local network or VPN.
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

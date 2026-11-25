@@ -1,5 +1,62 @@
 # Verification record
 
+## Inline Attention in CLI Browse
+
+Browse now places up to nine numbered waiting sessions above pins and computers, hides that section when empty, and keeps the full Attention view on `v`. Numeric shortcuts use the displayed filtered queue; terminal, form and filter input retain precedence. Status and pin columns are separate, and nonempty Browse sections have one blank row between them.
+
+- The CLI component run passed 103 tests. One pinned-layout test over-specified the exact truncation point; that assertion was removed while retaining host-visibility and spacing checks, and the remaining test passed in a focused rerun.
+- New regressions cover the nine-shortcut limit, same-named sessions on different computers, filtered numbering, missing shortcuts, and removal without silently retargeting Enter. Updated polling coverage verifies unshared remote status refresh and recovery directly in Browse.
+- Formatting and the macOS ARM64 release build passed.
+- A private real-PTY/OpenSSH/tmux scenario displayed two waiting sessions, pinned one through the UI, and verified single-row section spacing and separated markers. Shortcut `1` opened the correct remote computer; a digit typed in its terminal reached the shell. Clearing both waiting states hid the section without replacing the attached SSH client, and a later waiting state appeared without switching views. Filter input and `v` navigation also worked.
+- The running release was inspected at 130, 70 and 32 columns. Fixtures were removed afterward. These were controlled tmux statuses, not a real model-generated OMP question; iPhone behavior was not changed.
+
+## Guided reporting setup: CLI and iPhone
+
+Attention now offers read-only diagnosis and explicit, file-by-file reporter installation review. The shared Python backend distinguishes tmux native capability from observed reporting, resolves running agent profiles, and installs bundled Pi/OMP/OpenCode adapters over the existing connection. Other built-in hooks require a compatible remote Delux installer.
+
+- Python backend: 16 isolated tests passed, covering profile resolution, native versus observed status, installed-but-unconfirmed reporting, stale/forged proposals, ownership and symlink/hardlink refusal, and atomic installation/update.
+- Rust: 12 reporting tests, nine extension installer tests and nine Attention tests passed. Formatting and the macOS ARM64 release build passed.
+- iPhone: all 26 selected reporting-setup and AppModel tests passed on the iPhone 17 Pro simulator. The final simulator build was installed and visually inspected.
+- Isolated real OpenSSH/tmux fixtures exercised CLI and iPhone diagnosis of missing OMP reporters in separate named profiles. Cancellation left files absent; explicit confirmation installed the exact packaged adapter. The agent process remained running and no status was invented.
+- A confirmed CLI update preserved the established SSH client and agent PIDs; subsequent terminal input reached the original pane. The check waited for an actual attached client before recording its identity.
+- After explicitly restarting only the private fixtures, a Bun harness invoked the installed adapter's ask/answer handlers. CLI Attention entered and cleared its waiting state; iPhone showed the waiting session and setup subsequently showed reporting confirmed. This verifies real adapter-to-tmux-to-UI delivery, not a model-generated question.
+
+No user agent was restarted or sent input. These checks do not establish physical-iPhone installation or Homebrew publication. Setup requires Python 3 on the inspected computer; normal browsing does not. Installed reporters do not replay already-open questions.
+
+## OMP named-profile reporting setup
+
+A reported missing Attention entry was traced to a remote OMP 19.1.0 session running under tmux 3.8 with neither native program status nor `@agent_status` populated. No Delux adapter was installed, and the remote Delux 0.1.0 binary did not have the `agents` installer. The packaged Pi/OMP adapter was installed directly into the active named profile's extension directory.
+
+An isolated remote tmux server and Bun harness exercised that installed adapter's event handlers: session start cleared status, agent start reported working, an ask tool call reported waiting, its result restored working, agent end reported done, and shutdown cleared status. The private server was removed afterward. This verifies adapter-to-tmux reporting, not an actual model-generated ask. The existing user session was not restarted or given input; its already-open question was not claimed to appear retroactively.
+
+## Attention dashboard: CLI and iPhone
+
+The source tree now provides a cross-computer waiting-session inbox, separate collapsible errors, and explicit coverage for checking/unavailable computers and unreported status. Browse remains the CLI default; iPhone starts in Attention and remembers the selected view.
+
+- `cargo test tui::tests`: 93 passed. After correcting unnecessarily truncated computer labels, all nine `tui::tests::attention_` regressions passed. Native debug build and formatting check passed.
+- The CLI regressions cover cross-computer identity, stable queue selection, reused tmux lifetimes, preserved connected terminals, separate errors, incomplete coverage, and bounded polling/failure/recovery for unshared remote computers.
+- iPhone simulator build and all 17 `AppModelTests` passed, including six new inbox/coverage/lifetime regressions. Later presentation and accessibility changes were rebuilt and checked through the running app.
+- An isolated real-PTY/OpenSSH/tmux run displayed two identically named waiting sessions on distinct computers, with both computer names readable in the normal sidebar. Opening the selected session delivered input to the correct computer. Changing its status to working removed it from Attention without replacing the connected client; subsequent input still reached that session. Clicking Browse/Attention preserved terminal focus and the same client. Error and unavailable-computer disclosures worked, and quitting preserved the remote session.
+- A separate iPhone simulator connected through real loopback SSH, using computers and verified host keys added through the UI. It showed two waiting sessions, separate errors, and incomplete coverage. Input reached the selected computer before and after its waiting status cleared; the terminal remained connected. Returning showed the reduced queue. Clearing both waiting states automatically exposed errors without claiming all-clear. Coverage navigation, error disclosure accessibility, and remembered Browse selection after relaunch were exercised.
+
+These checks used only private fixture sessions and a dedicated simulator, not the user's existing sessions or simulator. They do not verify physical-iPhone installation, background notifications, or a published release.
+
+## LAN-first connectivity and iPhone rotation (November 21, 2026)
+
+The CLI browses Bonjour/mDNS SSH advertisements, merges unambiguous matches with existing computers, and supports explicit `lan` mappings keyed by canonical SSH destination. Alternate routes preserve the original OpenSSH trust identity. Route selection sends no session command; failed mutations are not replayed. The iPhone app adds explicit nearby-computer pairing and a pinned-key LAN-first connection race.
+
+The 14 LAN-focused Rust tests, 23 worker tests, seven mux tests and 15 app tests passed. Isolated OpenSSH coverage includes stalled and wrong-key routes, unknown-key rejection, multiple advertised endpoints, encrypted-key embedded sign-in with an unreachable primary, nonblocking route readers, stale-result rejection and no mutation replay. Formatting, Clippy with warnings denied and Rust 1.88 all-target checking passed. A freshly built CLI inventoried the private `lan-review` tmux session through the configured LAN interface; captured SSH arguments retained the canonical host-key alias and selected the LAN address.
+
+All 26 iPhone model, credential, protocol and route/authentication tests passed before the keyboard-layout follow-up. An isolated iPhone 17 Pro simulator without Tailscale discovered a real `_ssh._tcp` advertisement, verified the fixture host key, and paired the service with one existing computer without duplicating it. Live inventory and terminal input worked through the host's LAN address, confirmed by `LAN_ADDRESS_OK` in the private tmux session. A silent SSH endpoint and a different host key each fell back to the trusted primary address. The wrong-key sshd logged a disconnect without attempting authentication.
+
+Rotation exposed an accessory-overlap regression: UIKit's keyboard layout guide under-reported the keyboard's coverage after the accessory safe-area inset changed. The terminal now uses keyboard end-frame notifications and separately respects its bottom safe area. Inspected screenshots showed no overlap in portrait and landscape with software and hardware keyboards. The portrait software-keyboard viewport ended at y=522, above buttons at y=526–562; landscape hardware mode ended at y=338, above buttons at y=342–378. Dismissing the landscape keyboard restored the viewport to y=382. Remote input still worked after rotation (`ROTATION_INPUT_OK`).
+
+Two new UIKit geometry regressions passed, cycling software, hardware and dismissed keyboard frames in portrait and landscape. Their initial fixture omitted a `UIWindowScene`; attaching the test window to the app's scene corrected the fixture without weakening the viewport assertions.
+
+The connected physical iPhone was paired, unlocked and in Developer Mode, but this Mac had no valid signing identity or configured development team. Nothing was installed on the phone. Physical-device, cellular/Tailscale transitions and remote physical-host coverage remain unverified; these network scenarios used isolated sshd/tmux fixtures on the development Mac. No release or Homebrew publication is included.
+
+The temporary simulator, fixture credentials, SSH/Bonjour listeners, private tmux server and smoke scripts were removed. The detached tmux server required explicit cleanup after stopping the supervised fixture. Screenshots remain outside the checkout; no user sessions were changed.
+
 ## Sidebar availability grouping (November 20, 2026)
 
 The Browse sidebar separates Pinned sessions, Computers, and Other computers with blank lines and omits empty sections. Pinned shortcuts retain their computer label and their ordinary nested session row. Ready and probing computers remain in Computers; authentication, host-trust, missing-tool and connection failures appear in Other computers. Ordering within each section is preserved between explicit rescans; selection follows a computer when its sessions disappear or access returns. Navigation skips section headings and blank rows.

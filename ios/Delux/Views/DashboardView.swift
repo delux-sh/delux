@@ -1,17 +1,25 @@
 import SwiftUI
 
-/// All computers and their tmux sessions, waiting agents first.
+private enum DashboardMode: String {
+    case attention, browse
+}
+
+/// A cross-computer inbox alongside the complete computer inventory.
 struct DashboardView: View {
     @Environment(AppModel.self) private var model
     @State private var form: ComputerFormTarget?
     @State private var setAsideError: String?
     @State private var newSessionComputer: Computer?
+    @AppStorage("dashboard.mode.v1") private var mode = DashboardMode.attention
+    @State private var errorsExpanded = false
+    @State private var showingReportingSetup = false
 
     var body: some View {
         @Bindable var model = model
         NavigationStack(path: $model.path) {
             content
                 .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -31,11 +39,17 @@ struct DashboardView: View {
                     }
                 }
         }
+        .onChange(of: model.attention.showsErrorsByDefault, initial: true) { _, showErrors in
+            if showErrors { errorsExpanded = true }
+        }
         .sheet(item: $form) { target in
             ComputerFormView(target: target)
         }
         .sheet(item: $newSessionComputer) { computer in
             NewSessionView(computer: computer)
+        }
+        .sheet(isPresented: $showingReportingSetup) {
+            ReportingSetupView()
         }
         .sheet(item: $model.hostKeyPrompt) { prompt in
             HostKeyPromptView(prompt: prompt)
@@ -80,10 +94,7 @@ struct DashboardView: View {
         }
     }
 
-    private var title: String {
-        let waiting = model.waitingCount
-        return waiting > 0 ? "Delux · \(waiting) waiting" : "Delux"
-    }
+    private var title: String { "Delux" }
 
     @ViewBuilder
     private var content: some View {
@@ -123,6 +134,17 @@ struct DashboardView: View {
             .accessibilityIdentifier(AccessibilityID.dashboard)
         } else {
             List {
+                Section {
+                    Picker("Dashboard view", selection: $mode) {
+                        Text("Attention · \(model.waitingCount)").tag(DashboardMode.attention)
+                            .accessibilityIdentifier(AccessibilityID.attentionMode)
+                        Text("Browse").tag(DashboardMode.browse)
+                            .accessibilityIdentifier(AccessibilityID.browseMode)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier(AccessibilityID.dashboardMode)
+                    .listRowBackground(Color.clear)
+                }
                 if !model.isOnline {
                     Section {
                         Label("Offline — sessions will refresh when the network returns.", systemImage: "wifi.slash")
@@ -130,14 +152,18 @@ struct DashboardView: View {
                             .accessibilityIdentifier(AccessibilityID.offlineBanner)
                     }
                 }
-                ForEach(model.computers) { computer in
-                    ComputerSection(
-                        computer: computer,
-                        state: model.state(computer.id),
-                        isOnline: model.isOnline,
-                        onEdit: { form = .edit(computer) },
-                        onNewSession: { newSessionComputer = computer }
-                    )
+                if mode == .attention {
+                    attentionSections
+                } else {
+                    ForEach(model.computers) { computer in
+                        ComputerSection(
+                            computer: computer,
+                            state: model.state(computer.id),
+                            isOnline: model.isOnline,
+                            onEdit: { form = .edit(computer) },
+                            onNewSession: { newSessionComputer = computer }
+                        )
+                    }
                 }
             }
             .listStyle(.insetGrouped)
@@ -151,6 +177,93 @@ struct DashboardView: View {
             .accessibilityIdentifier(AccessibilityID.dashboard)
         }
     }
+
+    @ViewBuilder
+    private var attentionSections: some View {
+        Section {
+            if model.attention.waiting.isEmpty {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text("No reported waiting sessions")
+                    if !model.attention.isComplete {
+                        Text("Coverage is incomplete. Check the computers and unreported sessions below.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                ForEach(model.attention.waiting) { entry in
+                    InboxSessionRow(entry: entry)
+                }
+            }
+        } header: {
+            Text("Needs input · \(model.waitingCount)")
+                .font(.subheadline)
+                .fontWeight(.regular)
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+                .accessibilityIdentifier(AccessibilityID.attentionCount)
+        }
+        if !model.attention.errors.isEmpty {
+            Section {
+                DisclosureGroup(isExpanded: $errorsExpanded) {
+                    ForEach(model.attention.errors) { entry in
+                        InboxSessionRow(entry: entry)
+                    }
+                } label: {
+                    Text("Errors · \(model.attention.errors.count)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier(AccessibilityID.attentionErrors)
+                }
+            }
+        }
+        Section {
+            DisclosureGroup {
+                ForEach(model.attention.coverage) { coverage in
+                    if coverage.availability != .checked || coverage.unreportedCount > 0 {
+                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                            Text(coverage.computer.name)
+                            Text(coverageDetail(coverage))
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                        .accessibilityIdentifier(AccessibilityID.attentionCoverage + "." + coverage.id.uuidString)
+                    }
+                }
+                Button("Browse all computers and sessions") { mode = .browse }
+                    .accessibilityIdentifier(AccessibilityID.attentionCoverage + ".browse")
+            } label: {
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    let coverage = model.attention.coverage
+                    Text("\(coverage.filter { $0.availability == .checked }.count) checked · \(coverage.filter { $0.availability == .checking }.count) checking · \(coverage.filter { $0.availability == .unavailable }.count) unavailable")
+                    if model.attention.unreportedCount > 0 {
+                        Text("\(model.attention.unreportedCount) sessions without reported status")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(AccessibilityID.attentionCoverage + ".details")
+            }
+            Button("Set up reporting") { showingReportingSetup = true }
+                .font(.caption)
+                .accessibilityIdentifier(AccessibilityID.reportingSetup)
+        } header: {
+            Text("Coverage")
+                .font(.subheadline)
+                .fontWeight(.regular)
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+        }
+    }
+
+    private func coverageDetail(_ coverage: ComputerCoverage) -> String {
+        switch coverage.availability {
+        case .checking: return "Checking"
+        case .unavailable: return "Unavailable"
+        case .checked: return "\(coverage.unreportedCount) sessions without reported status"
+        }
+    }
 }
 
 enum ComputerFormTarget: Identifiable {
@@ -161,6 +274,51 @@ enum ComputerFormTarget: Identifiable {
         switch self {
         case .new: return nil
         case .edit(let computer): return computer.id
+        }
+    }
+}
+
+private struct InboxSessionRow: View {
+    @Environment(AppModel.self) private var model
+    let entry: InboxSession
+
+    var body: some View {
+        Button {
+            model.open(entry.session, on: entry.computer)
+        } label: {
+            HStack(spacing: Spacing.md) {
+                Image(systemName: StatusStyle.symbol(entry.session.status))
+                    .font(.caption)
+                    .foregroundStyle(StatusStyle.color(entry.session.status))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Spacing.xs) {
+                    Text(entry.session.name)
+                        .font(.body.monospaced())
+                        .lineLimit(1)
+                    Text("\(entry.computer.name) · \(entry.computer.hostname)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(entry.session.name), \(StatusStyle.label(entry.session.status)), \(entry.computer.name), \(entry.computer.hostname)")
+        .accessibilityIdentifier(AccessibilityID.attentionRow(entry.id))
+        .contextMenu {
+            Button(role: .destructive) {
+                model.requestEndSession(entry.session, on: entry.computer)
+            } label: {
+                Label("End Session…", systemImage: "stop.circle")
+            }
+            .disabled(!model.isOnline || model.endingSession != nil)
         }
     }
 }
@@ -186,10 +344,12 @@ private struct ComputerSection: View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 Text(computer.name)
-                    .font(.headline)
+                    .font(.subheadline)
+                    .fontWeight(.regular)
                     .textCase(nil)
-                    .foregroundStyle(.primary)
-                Text("\(computer.username)@\(computer.hostname):\(String(computer.port))")
+                    .foregroundStyle(.secondary)
+                let address = state.connectedAddress ?? SSHAddress(hostname: computer.hostname, port: computer.port)
+                Text("\(computer.username)@\(address.hostname):\(String(address.port))\(address == computer.lanAddress ? " · LAN" : "")")
                     .font(.caption.monospaced())
                     .textCase(nil)
             }
@@ -228,15 +388,16 @@ private struct ComputerSection: View {
 
     @ViewBuilder
     private var rows: some View {
+        if !isOnline {
+            StatusRow(symbol: "wifi.slash", title: "Offline", detail: "Waiting for a fresh inventory.", tint: .secondary)
+                .accessibilityIdentifier(AccessibilityID.computerStatus(computer.id))
+            staleSessions
+        } else {
         switch state.phase {
         case .idle, .loading:
-            if isOnline {
-                StatusRow(symbol: nil, title: "Connecting…", detail: nil, tint: .secondary, progress: true)
-                    .accessibilityIdentifier(AccessibilityID.computerStatus(computer.id))
-            } else {
-                StatusRow(symbol: "wifi.slash", title: "Offline", detail: "Will connect when the network returns.", tint: .secondary)
-                    .accessibilityIdentifier(AccessibilityID.computerStatus(computer.id))
-            }
+            StatusRow(symbol: nil, title: "Connecting…", detail: nil, tint: .secondary, progress: true)
+                .accessibilityIdentifier(AccessibilityID.computerStatus(computer.id))
+            staleSessions
         case .loaded:
             if state.sessions.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.sm) {
@@ -275,6 +436,7 @@ private struct ComputerSection: View {
             )
             .accessibilityIdentifier(AccessibilityID.computerStatus(computer.id))
         }
+        }
     }
 
     @ViewBuilder
@@ -288,14 +450,14 @@ private struct ComputerSection: View {
     }
 
     private var sessionRows: some View {
-        ForEach(state.sessions) { session in
+        ForEach(state.sessions, id: \.lifetime) { session in
             Button {
                 model.open(session, on: computer)
             } label: {
-                SessionRow(session: session)
+                SessionRow(session: session, isCurrent: isOnline && state.phase == .loaded)
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier(AccessibilityID.sessionRow(computer: computer.id, session: session.id))
+            .accessibilityIdentifier(AccessibilityID.sessionRow(computer: computer.id, session: session.id) + ".\(session.serverPID).\(session.serverStarted).\(session.created)")
             .contextMenu {
                 Button(role: .destructive) {
                     model.requestEndSession(session, on: computer)
@@ -311,22 +473,23 @@ private struct ComputerSection: View {
 
 private struct SessionRow: View {
     let session: RemoteSession
+    var isCurrent = true
 
     var body: some View {
         HStack(spacing: Spacing.md) {
             Image(systemName: StatusStyle.symbol(session.status))
                 .font(.caption.weight(.bold))
-                .foregroundStyle(StatusStyle.color(session.status))
+                .foregroundStyle(isCurrent ? StatusStyle.color(session.status) : .secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 Text(session.name)
                     .font(.body.monospaced())
-                    .fontWeight(session.status == .waiting ? .semibold : .regular)
+                    .fontWeight(isCurrent && session.status == .waiting ? .semibold : .regular)
                     .lineLimit(1)
                 Text(detail)
                     .font(.caption)
-                    .foregroundStyle(session.status == .waiting ? StatusStyle.color(.waiting) : .secondary)
+                    .foregroundStyle(isCurrent && session.status == .waiting ? StatusStyle.color(.waiting) : .secondary)
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right")
@@ -337,12 +500,13 @@ private struct SessionRow: View {
         .contentShape(Rectangle())
         .padding(.vertical, Spacing.xs)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(session.name), \(StatusStyle.label(session.status)), \(session.windows) windows")
+        .accessibilityLabel("\(session.name), \(detail)")
     }
 
     private var detail: String {
         let windows = session.windows == 1 ? "1 window" : "\(session.windows) windows"
-        return session.status.map { "\(StatusStyle.label($0)) · \(windows)" } ?? windows
+        let status = StatusStyle.label(session.status)
+        return "\(isCurrent ? status : "Last snapshot: " + status) · \(windows)"
     }
 }
 

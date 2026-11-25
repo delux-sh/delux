@@ -22,11 +22,15 @@ Sign-in, scans, previews, and attachments reuse a private, per-process SSH contr
 
 Port, agent, and X11 forwarding are disabled for every Delux SSH operation, including attachments. Use SSH directly when you need forwarding.
 
+LAN alternatives preserve the canonical destination's OpenSSH host identity using `HostKeyAlias`. Selection authenticates a command-free private control connection before sending an inventory command. Unknown or changed keys cannot be accepted on an alternate route, including during interactive sign-in. If safe routing would change other SSH settings, Delux retains the canonical destination. Route fallback never replays a command already sent.
+
 ### iPhone companion
 
 The native app uses Apple's SwiftNIO SSH rather than an OpenSSH subprocess. Passwords and per-computer Ed25519 private keys are stored in Keychain with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` and no synchronisation. Hostnames, usernames and pinned SHA256 host-key fingerprints live in the app's sandbox. Unknown host keys require explicit out-of-band verification; a mismatching pinned key is rejected before authentication. Forgetting a key requires a separate confirmation.
 
 The app opens only explicitly configured computers. It has no agent/port forwarding, remote helper service, telemetry, push service or wallet integration. SSH channels close on backgrounding; tmux sessions do not. Reattachment checks the saved tmux server lifetime and session ID rather than silently accepting a replacement server. Remote terminal output remains untrusted; clipboard escape sequences do not grant access to the device clipboard.
+
+Nearby discovery only browses `_ssh._tcp` advertisements while Add/Edit Computer is open. Selecting or pairing a service is explicit; its name is not proof of identity. A paired LAN address shares the computer's existing credentials and host-key pin. Initial trust uses the primary address; subsequent LAN and primary candidates must match that pin before credentials are loaded. Only the winning connection receives session commands; losing connections are closed.
 
 ### Commands and terminal output
 
@@ -54,13 +58,15 @@ Automatic Tailscale discovery includes only Linux and macOS peers that are unsha
 
 For untagged, unshared peers with known matching ownership, host mappings are matched by node ID, full DNS name without its trailing dot, short DNS name, then hostname. Restricted peers match mappings and `ignore` entries only by node ID or full DNS name; their short DNS names and hostnames cannot claim or suppress independently configured aliases. Configure a restricted peer by node ID or full DNS name to associate it with its discovery metadata. Other configured aliases remain independent SSH destinations and are probed even when absent from Tailscale discovery. Saving a user with `u` uses the stable discovery key, taking precedence over name-based mappings.
 
-`ignore` excludes matching computers, including configured hosts. Explicit `--host` destinations bypass discovery and `ignore`, but still resolve through configured mappings.
+The CLI also performs a bounded 1.2-second local multicast browse for `_ssh._tcp` services, retaining at most 128 hostnames and 32 endpoints per hostname; it does not scan IP ranges. Advertised names and addresses are untrusted. Unambiguous matches nominate a route for an existing computer, never a new trust identity. Unmatched advertisements become separate computers whose keys still require explicit verification. LAN discovery has no Tailscale ownership metadata; its results do not imply tailnet membership.
+
+`ignore` excludes matching computers, including configured hosts and matching LAN service hostnames. Explicit `--host` destinations bypass discovery and `ignore`, but still resolve through configured mappings and may use explicitly configured `lan` addresses. `--local` performs neither LAN nor Tailscale discovery.
 
 ### Stored preferences
 
 Configuration defaults to `~/.config/delux/cli.json`, including on macOS. Pins live in `~/.local/state/delux/state.json`; legacy recent-attachment entries are preserved but no longer recorded or displayed. `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override those base directories; `--config PATH` overrides the configuration file. Relative or empty XDG directory values are ignored, and non-UTF-8 directory roots are rejected.
 
-These files contain computer mappings and session preferences, not passwords, private keys, or captured terminal output. Previews stay in memory; inventories refresh on rescan, while agent status refreshes independently.
+These files contain computer mappings, optional LAN addresses and session preferences, not passwords, private keys, or captured terminal output. Previews stay in memory; inventories refresh on rescan, while agent status refreshes independently.
 
 Updates are merged under persistent `.lock` files beside the resolved target files. Do not remove those locks while Delux is running. Existing symlinks are preserved; dangling links are rejected. Each configuration or state file is limited to 64 KiB, and oversized updates are rejected without replacing it.
 

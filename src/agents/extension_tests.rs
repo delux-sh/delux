@@ -19,7 +19,9 @@ fn context(root: &TempDir, variables: &[(&str, &str)]) -> Context {
                 .iter()
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| {
-                    if value.is_empty() || name == "PI_CONFIG_DIR" {
+                    if value.is_empty()
+                        || matches!(name, "PI_CONFIG_DIR" | "OMP_PROFILE" | "PI_PROFILE")
+                    {
                         OsString::from(*value)
                     } else {
                         root.path().join(value).into_os_string()
@@ -274,5 +276,156 @@ fn extension_table_uses_the_packaged_adapter_sources_and_lists_all_names() {
         String::from_utf8(help)
             .unwrap()
             .contains("claude|codex|gemini|opencode|pi|omp")
+    );
+}
+
+#[test]
+fn omp_profiles_follow_upstream_precedence_and_ignore_named_overrides() {
+    let root = TempDir::new();
+    let cases: &[(&[(&str, &str)], &str)] = &[
+        (&[("OMP_PROFILE", "wkchen")], ".omp/profiles/wkchen/agent"),
+        (&[("PI_PROFILE", "legacy")], ".omp/profiles/legacy/agent"),
+        (
+            &[("OMP_PROFILE", "wkchen"), ("PI_PROFILE", "legacy")],
+            ".omp/profiles/wkchen/agent",
+        ),
+        (
+            &[("OMP_PROFILE", ""), ("PI_PROFILE", "legacy")],
+            ".omp/agent",
+        ),
+        (
+            &[("OMP_PROFILE", "default"), ("PI_PROFILE", "legacy")],
+            ".omp/agent",
+        ),
+        (
+            &[("OMP_PROFILE", "  wkchen  ")],
+            ".omp/profiles/wkchen/agent",
+        ),
+        (
+            &[
+                ("OMP_PROFILE", "wkchen"),
+                ("PI_CODING_AGENT_DIR", "ignored"),
+            ],
+            ".omp/profiles/wkchen/agent",
+        ),
+        (
+            &[("OMP_PROFILE", "wkchen"), ("PI_CONFIG_DIR", ".custom")],
+            ".custom/profiles/wkchen/agent",
+        ),
+        (
+            &[("OMP_PROFILE", "wkchen"), ("PI_CONFIG_DIR", "/.custom")],
+            ".custom/profiles/wkchen/agent",
+        ),
+        (
+            &[
+                ("OMP_PROFILE", "default"),
+                ("PI_CODING_AGENT_DIR", "custom"),
+            ],
+            "custom",
+        ),
+        (
+            &[
+                ("OMP_PROFILE", ""),
+                ("PI_PROFILE", "legacy"),
+                ("PI_CODING_AGENT_DIR", ".omp/profiles/legacy/agent"),
+            ],
+            ".omp/agent",
+        ),
+        (
+            &[
+                ("OMP_PROFILE", ""),
+                ("PI_PROFILE", "legacy"),
+                ("PI_CODING_AGENT_DIR", "custom"),
+            ],
+            "custom",
+        ),
+        (
+            &[
+                ("OMP_PROFILE", ""),
+                ("PI_PROFILE", "legacy"),
+                ("PI_CODING_AGENT_DIR", ".omp/profiles/legacy/./agent"),
+            ],
+            ".omp/profiles/legacy/agent",
+        ),
+    ];
+    for (variables, expected) in cases {
+        let context = context(&root, variables);
+        assert_eq!(
+            context.directories[index("omp")],
+            root.path().join(expected),
+            "{variables:?}"
+        );
+    }
+}
+
+#[test]
+fn omp_profile_install_status_and_uninstall_use_the_same_named_file() {
+    let root = TempDir::new();
+    let context = context(
+        &root,
+        &[
+            ("OMP_PROFILE", "wkchen"),
+            ("PI_CODING_AGENT_DIR", "ignored"),
+        ],
+    );
+    fs::create_dir_all(&context.directories[index("omp")]).unwrap();
+    let file = root
+        .path()
+        .join(".omp/profiles/wkchen/agent/extensions/delux-agent-status.ts");
+    invoke(&context, &["install", "omp"]);
+    assert!(file.is_file());
+    assert!(
+        !root
+            .path()
+            .join(".omp/agent/extensions/delux-agent-status.ts")
+            .exists()
+    );
+    assert!(
+        !root
+            .path()
+            .join("ignored/extensions/delux-agent-status.ts")
+            .exists()
+    );
+    assert!(invoke(&context, &["status", "omp"]).contains("installed"));
+    invoke(&context, &["uninstall", "omp"]);
+    assert!(!file.exists());
+}
+
+#[test]
+fn omp_profiles_reject_invalid_names_and_resolve_relative_default_override() {
+    let root = TempDir::new();
+    let inputs = |profile: &str, directory: &str| {
+        Context::from_inputs(
+            Some(root.path().as_os_str().to_owned()),
+            OsString::new(),
+            root.path().join("delux"),
+            root.path().join("definitions"),
+            |name| match name {
+                "OMP_PROFILE" => Some(profile.into()),
+                "PI_CODING_AGENT_DIR" => Some(directory.into()),
+                _ => None,
+            },
+        )
+    };
+    for profile in [
+        "../other",
+        ".",
+        "..",
+        "Name",
+        "x.",
+        "con",
+        "nul.txt",
+        "com0",
+        "lpt9.log",
+        "a/b",
+        "a b",
+        &"a".repeat(65),
+    ] {
+        assert!(inputs(profile, "").is_err(), "{profile}");
+    }
+    let context = inputs("default", "relative/../agent").unwrap();
+    assert_eq!(
+        context.directories[index("omp")],
+        std::env::current_dir().unwrap().join("agent")
     );
 }

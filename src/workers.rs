@@ -15,6 +15,7 @@ const INVALID_INVENTORY: &str = "Tailscale returned a malformed peer inventory";
 pub struct Config {
     pub hosts: BTreeMap<String, String>,
     pub ignore: Vec<String>,
+    pub lan: BTreeMap<String, crate::lan::Address>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -77,9 +78,9 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     };
     if fields
         .keys()
-        .any(|name| name != "hosts" && name != "ignore")
+        .any(|name| name != "hosts" && name != "ignore" && name != "lan")
     {
-        return Err("CLI configuration accepts only 'hosts' and 'ignore'".into());
+        return Err("CLI configuration accepts only 'hosts', 'ignore', and 'lan'".into());
     }
     let mut config = Config::default();
     if let Some(hosts) = fields.get("hosts") {
@@ -94,6 +95,14 @@ pub fn load_config(path: &str) -> Result<Config, String> {
         for name in ignored {
             let name = name.as_str().ok_or(INVALID_CONFIG_SHAPE)?;
             config.ignore.push(name.into());
+        }
+    }
+    if let Some(lan) = fields.get("lan") {
+        config.lan = serde_json::from_value(lan.clone())
+            .map_err(|_| "Use a lan object of SSH-destination: {hostname, port} pairs")?;
+        for (destination, address) in &config.lan {
+            validate_destination(destination)?;
+            address.validate()?;
         }
     }
     for (name, target) in &config.hosts {
@@ -130,6 +139,7 @@ fn write_host_mapping(
     struct SavedConfig<'a> {
         hosts: &'a BTreeMap<String, String>,
         ignore: &'a [String],
+        lan: &'a BTreeMap<String, crate::lan::Address>,
     }
     if name.is_empty() {
         return Err("Host mapping name must not be empty".into());
@@ -150,6 +160,7 @@ fn write_host_mapping(
         let mut raw = serde_json::to_vec_pretty(&SavedConfig {
             hosts: &config.hosts,
             ignore: &config.ignore,
+            lan: &config.lan,
         })
         .map_err(|error| format!("Serialize CLI configuration: {error}"))?;
         raw.push(b'\n');
@@ -367,6 +378,15 @@ pub fn discover(
     config: &Config,
     opts: &Options,
 ) -> Result<(Vec<Worker>, String), String> {
+    discover_with(cancel, config, opts, crate::lan::browse)
+}
+
+fn discover_with(
+    cancel: &Cancel,
+    config: &Config,
+    opts: &Options,
+    browse: impl FnOnce(&Cancel) -> Result<Vec<crate::lan::Service>, String>,
+) -> Result<(Vec<Worker>, String), String> {
     let mut workers = Vec::with_capacity(1 + opts.hosts.len() + config.hosts.len());
     if !opts.no_local {
         workers.push(local_worker());
@@ -379,10 +399,11 @@ pub fn discover(
         for name in &opts.hosts {
             workers.push(explicit_worker(name, config)?);
         }
+        crate::lan::merge(&mut workers, config, Vec::new());
     } else {
         let found = match tailscale_command() {
             None => Err(
-                "Tailscale CLI not found; using local/configured computers. Use --host to add one"
+                "Tailscale CLI not found; using LAN/local/configured computers. Use --host to add one"
                     .into(),
             ),
             Some(command) => {
@@ -414,6 +435,16 @@ pub fn discover(
                 workers.extend(configured_workers(config, &HashSet::new()));
             }
         }
+        match browse(cancel) {
+            Ok(services) => crate::lan::merge(&mut workers, config, services),
+            Err(error) => {
+                if !warning.is_empty() {
+                    warning.push_str("; ");
+                }
+                warning.push_str(&error);
+                crate::lan::merge(&mut workers, config, Vec::new());
+            }
+        }
     }
     // Preserve discovery order while retaining the latest metadata per destination.
     let mut positions = HashMap::with_capacity(workers.len());
@@ -435,6 +466,58 @@ mod tests {
     use super::*;
     use crate::test_support::{EnvVar, TempDir, env_write};
 
+    #[test]
+    fn scoped_requests_never_browse_and_explicit_lan_config_survives_saves() {
+        let dir = TempDir::new();
+        let path = dir.path().join("cli.json");
+        let path = path.to_str().unwrap();
+        std::fs::write(
+            path,
+            r#"{"hosts":{"dev":"alice@dev"},"lan":{"alice@dev":{"hostname":"192.0.2.8"}}}"#,
+        )
+        .unwrap();
+        save_host_mapping(path, "other", "bob@other").unwrap();
+        let config = load_config(path).unwrap();
+        assert_eq!(config.lan["alice@dev"].port, 22);
+        for opts in [
+            Options {
+                local_only: true,
+                ..Options::default()
+            },
+            Options {
+                hosts: vec!["dev".into()],
+                no_local: true,
+                ..Options::default()
+            },
+        ] {
+            let result = super::discover_with(&Cancel::new(), &config, &opts, |_| {
+                panic!("scoped request started LAN discovery")
+            })
+            .unwrap();
+            assert_eq!(result.0.len(), 1);
+        }
+        for value in [
+            r#"{"lan":[]}"#,
+            r#"{"lan":{"dev":"192.0.2.8"}}"#,
+            r#"{"lan":{"dev":{"hostname":"alice@host"}}}"#,
+            r#"{"lan":{"dev":{"hostname":"host","port":0}}}"#,
+            r#"{"lan":{"dev":{"hostname":"host","port":65536}}}"#,
+            r#"{"lan":{"dev":{"hostname":"host","extra":true}}}"#,
+        ] {
+            std::fs::write(path, value).unwrap();
+            assert!(load_config(path).is_err(), "accepted {value}");
+        }
+    }
+
+    // Existing Tailscale fixtures must not browse the developer's actual LAN.
+    fn discover(
+        cancel: &Cancel,
+        config: &Config,
+        opts: &Options,
+    ) -> Result<(Vec<Worker>, String), String> {
+        super::discover_with(cancel, config, opts, |_| Ok(Vec::new()))
+    }
+
     fn config(hosts: &[(&str, &str)], ignore: &[&str]) -> Config {
         Config {
             hosts: hosts
@@ -442,6 +525,7 @@ mod tests {
                 .map(|(name, target)| ((*name).into(), (*target).into()))
                 .collect(),
             ignore: ignore.iter().map(|name| (*name).into()).collect(),
+            lan: BTreeMap::new(),
         }
     }
 

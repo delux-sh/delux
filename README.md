@@ -8,7 +8,7 @@ tmux keeps your work running. Delux helps you find it again: browse local and re
 
 *Recorded in a demo environment with synthetic computers and sessions.*
 
-Delux uses SSH and tmux. It can find computers through [Tailscale](https://tailscale.com), or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
+Delux uses SSH and tmux. It can find computers through [Tailscale](https://tailscale.com) and Bonjour/mDNS on your LAN, or use SSH destinations you provide. Nothing to install on remote machines beyond the usual SSH and tmux tools.
 
 ## Why I built this
 
@@ -44,21 +44,23 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 Keep `~/.cargo/bin` on your shell's `PATH`.
 
-Local discovery and attachment need **tmux 3.2+**. Remote access needs a local OpenSSH client and an SSH server on the remote computer, with **tmux 3.2+**, `base64`, and `tr` available to noninteractive `/bin/sh` commands. No remote Delux service or installation is needed. Tailscale and its CLI are optional, for discovery.
+Local discovery and attachment need **tmux 3.2+**. Remote access needs a local OpenSSH client and an SSH server on the remote computer, with **tmux 3.2+**, `base64`, and `tr` available to noninteractive `/bin/sh` commands. No remote Delux service or installation is needed. Tailscale and its CLI are optional. Automatic LAN discovery requires the computer to advertise `_ssh._tcp` through Bonjour or Avahi; otherwise, configure its address explicitly.
 
 ## Use it
 
 ```sh
-delux                         # local sessions + Tailscale computers
+delux                         # local sessions + LAN and Tailscale computers
 delux --local                 # just this computer
 delux --host dev-box          # local sessions + an SSH host or alias
 delux list --json              # inventory for scripts
 delux attach dev-box project   # full-terminal attachment, without the picker
 ```
 
-If you don't use Tailscale, start with `--local` or `--host`. You can repeat `--host` and add `--no-local` to show only remote computers. See `delux --help` for all options.
+LAN discovery works without Tailscale. Use `--local` to skip network discovery, or `--host` to use an explicit SSH destination instead of discovery. You can repeat `--host` and add `--no-local` to show only remote computers. See `delux --help` for all options.
 
 Automatic Tailscale discovery includes only untagged, unshared computers whose known owner matches this computer's known owner. Add other computers explicitly with configured `hosts` or `--host`.
+
+An unambiguous LAN advertisement is paired with an existing computer rather than added as a duplicate. Names only nominate routes: an alternate LAN connection must verify the original SSH host identity before authentication. The CLI spends at most three seconds selecting a LAN route before falling back to the normal destination. Existing connections stay on their current route; failed session commands are never replayed on another route.
 
 Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails while both are active, check your VPN's compatibility with Tailscale; connecting by IP address instead of hostname may not help.
 
@@ -66,12 +68,25 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 
 ### In the picker
 
+The picker starts in **Browse**, with a **Needs input** section above pinned sessions whenever sessions report waiting. It shows up to nine sessions, each labeled with its computer and a numbered shortcut. With the sidebar focused, press `1`–`9` to open the corresponding session. Numbers remain ordinary input in the terminal, filter and forms.
+
+Press `v`, or click **View all attention** in the sidebar title, for the complete **Attention** view. It collects all sessions explicitly reporting **waiting** across the computers in the current discovery scope; **Errors** is separate and expands automatically when no waiting sessions remain. Opening a session does not clear its status. Both views refresh reported status without replacing or disconnecting an open terminal.
+
+Coverage shows checked, checking, unavailable computers, and sessions without reported status. Missing status is not treated as success or inferred from inactivity. An empty inbox with incomplete coverage is not an all-clear; expand **Computer checks** or return to Browse to investigate.
+
+Press `s` in Attention to **Set up reporting**. Delux checks native support and running agents/profiles, then offers supported reporter installation only after showing the exact files and receiving confirmation. Installed files are not proof of live reporting. See [guided setup](adapters/README.md#guided-setup).
+
 | Key | Action |
 | --- | --- |
 | ↑ / ↓ or `j` / `k` | Move |
 | `enter` | Open a session, sign in, or create on an empty ready computer |
 | `tab` | Focus the connected terminal; open the selected session if none is connected |
 | `shift-tab` | Return to the list without disconnecting |
+| `1`–`9` | Open the numbered Needs input session (sidebar focus only) |
+| `v` | View all Attention / return to Browse |
+| `e` | Expand or collapse errors in Attention |
+| `c` | Expand or collapse computer checks in Attention |
+| `s` | Inspect and set up reporting in Attention |
 | `n` | Create a session on the selected computer |
 | `x` | End the selected session, after confirmation |
 | `/` | Filter computers and sessions |
@@ -82,7 +97,7 @@ Other VPNs can interfere with Tailscale's DNS and connectivity. If SSH fails whi
 | `r` | Rescan |
 | `q` | Quit |
 
-The **Browse** sidebar has three sections, separated by blank lines: **Pinned sessions** (shortcuts labeled with their computer), **Computers** (ready or still probing, with sessions nested beneath), and **Other computers** (sign-in, host-key, missing-tool, and connection failures). Empty sections are hidden. Pinning adds a shortcut without removing the session from its computer. Status rows remain selectable; filtering searches both computer sections. Status changes move a computer between sections without changing which computer you have selected. A selected session is remembered across a failed probe and restored if it returns.
+The **Browse** sidebar has **Needs input**, **Pinned sessions** (shortcuts labeled with their computer), **Computers** (ready or still probing, with sessions nested beneath), and **Other computers** (sign-in, host-key, missing-tool, and connection failures). Nonempty sections have one blank line between them; empty sections are hidden. Pinning adds a shortcut without removing the session from its computer. Status and pin indicators occupy separate columns. Status rows remain selectable; filtering searches computers and sessions, including the inline queue. Status changes move a computer between sections without changing which computer you have selected. A selected session is remembered across a failed probe and restored if it returns.
 
 Computers already reported offline start in **Other computers**, before probing finishes. A successful probe moves them into **Computers** even if Tailscale still reports them offline.
 
@@ -113,7 +128,7 @@ delux agents install          # wire detected Claude Code, Codex, Gemini CLI, Op
 delux agents                  # show what is found and wired
 ```
 
-Pi and OMP share one adapter; if `PI_CODING_AGENT_DIR` points them at the same directory, uninstalling either removes reporting for both.
+Pi and OMP share one adapter; if their resolved extension directories are the same, uninstalling either removes reporting for both. OMP named profiles are supported: for example, `OMP_PROFILE=work delux agents install omp`.
 
 Other tools with a compatible hooks file can be described in `~/.config/delux/agents/<id>.json` (or the corresponding `XDG_CONFIG_HOME` directory). See [Define your own agent](adapters/README.md#define-your-own-agent) for the format and limits.
 
@@ -143,9 +158,14 @@ To always include or ignore computers, create `~/.config/delux/cli.json`:
     "dev-linux": "my-linux-ssh-alias",
     "mac-mini": "alice@mac-mini"
   },
+  "lan": {
+    "alice@mac-mini": { "hostname": "mac-mini.local", "port": 22 }
+  },
   "ignore": ["retired-box"]
 }
 ```
+
+`lan` supplies preferred addresses for computers that do not advertise SSH or whose LAN name differs. Keys are the complete SSH **destination**, including any `user@` prefix—not the display name in `hosts`. The port defaults to 22. Explicit `--host` requests also honor these mappings. Both addresses must present the same trusted host identity. ProxyJump, ProxyCommand, hostname canonicalization and route-dependent SSH settings conservatively retain the normal destination.
 
 `--config PATH` selects another file. Configuration and state also respect `XDG_CONFIG_HOME` and `XDG_STATE_HOME`. [Discovery rules and local storage](SECURITY.md#discovery-and-local-data) cover shared computers, matching, and saved preferences.
 
@@ -153,9 +173,17 @@ To always include or ignore computers, create `~/.config/delux/cli.json`:
 
 `ios/` contains a native SwiftUI dashboard and SwiftTerm terminal over Apple's SwiftNIO SSH. Add a computer by hostname/IP, SSH port and username; see its tmux sessions and agent status, open a terminal, or create a session with a directory and optional command. It connects directly: no Delux daemon or wallet is required on the server.
 
+The dashboard starts in **Attention** and remembers your Attention/Browse choice. It uses the same waiting-only inbox and separate error section described above. Tap a session to respond in its terminal; expand **Coverage** for unavailable computers and unreported sessions, or switch to **Browse** for the full computer/session list.
+
+Tap **Set up reporting** below Coverage to inspect saved computers over SSH and review an installation. Running terminals stay connected; Delux never restarts agents. Pi, OMP and OpenCode reporting can be installed without a Delux binary on the server.
+
 Long-press a session row and choose **End Session…**, or use the terminal's session-actions menu. The confirmation names the session and SSH destination and defaults to **Cancel**. Ending closes every window and pane in that session; leaving the terminal or backgrounding the app does not.
 
 Use a generated per-computer Ed25519 key (copy its public key into that server account's `authorized_keys`) or an SSH password. Credentials stay in the device-only Keychain. Verify the displayed server fingerprint through another trusted channel before connecting. A changed host key blocks access; forgetting a pin is an explicit action in Edit Computer.
+
+**Nearby Computers** in Add/Edit Computer browses LAN SSH advertisements. Use one as a new computer's primary address, or choose **Use for Saved Computer** to pair it with an existing entry without duplicating sessions or credentials. You can also enter an address in **LAN Address (optional)**. Allow Local Network access when iOS asks; discovery alone never signs in.
+
+First-time host-key verification uses the primary address. After a fingerprint is pinned, LAN gets a 750 ms head start; the primary connection starts immediately if LAN fails, or after that delay if LAN stalls. The first fully authenticated connection wins, and both routes must match the same pin before credentials are loaded. The dashboard and terminal show **LAN** when that route wins. Active terminals do not migrate mid-session, and commands are not retried across routes.
 
 To build with Xcode and XcodeGen installed:
 
@@ -167,7 +195,7 @@ open Delux.xcodeproj
 
 Choose the **Delux** scheme and an iPhone simulator; **Product → Test** runs its tests. Xcode 26.4.1 is the locally tested toolchain. For a physical iPhone, select your signing team in Xcode and enable Developer Mode on the phone. SwiftTerm's pinned build-information plugin needs Xcode approval; command-line builds use `-skipPackagePluginValidation`. Simulator builds still need ad-hoc signing (`CODE_SIGN_IDENTITY=-`), not `CODE_SIGNING_ALLOWED=NO`, because Keychain requires application entitlements. `project.yml` is the project source; regenerate the project after changing it. Package versions are locked in the shared `Package.resolved`.
 
-Connect through the separate Tailscale iOS app when needed. Desktop SSH aliases, ProxyJump, imported private keys, keyboard-interactive/MFA and automatic tailnet discovery are not supported. The app closes SSH connections in the background and reconnects to the saved session lifetime when reopened; remote tmux sessions keep running. There are no background notifications or universal agent-approval buttons: respond inside the actual terminal. No App Store or TestFlight release is published.
+LAN connections do not require Tailscale. Connect through the separate Tailscale iOS app when the primary address needs it. Desktop SSH aliases, ProxyJump, imported private keys, keyboard-interactive/MFA and automatic tailnet discovery are not supported. The app closes SSH connections in the background and reconnects to the saved session lifetime when reopened; remote tmux sessions keep running. There are no background notifications or universal agent-approval buttons: respond inside the actual terminal. No App Store or TestFlight release is published.
 
 ## Contributing
 

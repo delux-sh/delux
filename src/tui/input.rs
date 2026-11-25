@@ -3,11 +3,11 @@
 use std::io;
 
 use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
 use super::confirmation::{ConfirmationAction, EndConfirmation};
-use super::{Command, Picker, RowKind, UserInput};
+use super::{Command, Picker, RowKind, UserInput, View};
 use crate::app::{Choice, Status};
 use crate::display::display;
 use crate::exit_codes;
@@ -20,6 +20,9 @@ impl Picker {
             return None;
         }
         self.show_scroll_hint = false;
+        if self.reporting_setup.is_some() {
+            return self.reporting_key(key);
+        }
         if self.ending.is_some() {
             return self.ending_key(key);
         }
@@ -112,7 +115,7 @@ impl Picker {
                 }
             }
         }
-        // Modified letters are not the corresponding normal-mode shortcuts.
+        // Modified keys are not the corresponding normal-mode shortcuts.
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -120,6 +123,17 @@ impl Picker {
             return None;
         }
         match key.code {
+            KeyCode::Char(ch @ '1'..='9') if key.modifiers.is_empty() => {
+                if let Some(index) = self
+                    .rows
+                    .iter()
+                    .position(|row| row.shortcut == Some(ch as u8 - b'0'))
+                {
+                    self.cursor = Some(index);
+                    self.remember();
+                    return self.activate();
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-self.page()),
@@ -135,6 +149,18 @@ impl Picker {
                 {
                     return self.activate();
                 }
+            }
+            KeyCode::Char('v') => self.switch_view(),
+            KeyCode::Char('s') if self.view == View::Attention => {
+                return Some(self.start_reporting_setup());
+            }
+            KeyCode::Char('e') if self.view == View::Attention => {
+                self.errors_expanded = !self.errors_expanded;
+                self.rebuild();
+            }
+            KeyCode::Char('c') if self.view == View::Attention => {
+                self.checks_expanded = !self.checks_expanded;
+                self.rebuild();
             }
             KeyCode::Char('/') => self.filtering = true,
             KeyCode::Esc => {
@@ -326,6 +352,31 @@ impl Picker {
 
     pub(super) fn mouse(&mut self, event: MouseEvent) -> Option<Command> {
         self.show_scroll_hint = false;
+        if let Some(setup) = &mut self.reporting_setup {
+            setup.mouse(event);
+            return None;
+        }
+        if event.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.input.is_none()
+            && self.creation.is_none()
+            && self.ending.is_none()
+            && self.add_input.is_none()
+            && !self.filtering
+            && self.setup_area.contains((event.column, event.row).into())
+        {
+            return Some(self.start_reporting_setup());
+        }
+        if event.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.input.is_none()
+            && self.creation.is_none()
+            && self.ending.is_none()
+            && self.add_input.is_none()
+            && !self.filtering
+            && self.view_area.contains((event.column, event.row).into())
+        {
+            self.switch_view();
+            return None;
+        }
         if let Some(event) = self.terminal_mouse_event(event) {
             let active = self.active.as_mut()?;
             match active.terminal.scroll(event) {
@@ -398,6 +449,9 @@ impl Picker {
     }
 
     pub(super) fn paste(&mut self, text: &str) -> Option<Command> {
+        if self.reporting_setup.is_some() {
+            return None;
+        }
         if self.ending.is_some() {
             return None;
         }
@@ -585,7 +639,7 @@ impl Picker {
         let row = self.current_row()?;
         if !matches!(
             row.kind,
-            RowKind::Computer | RowKind::Session | RowKind::Pinned
+            RowKind::Computer | RowKind::Session | RowKind::Pinned | RowKind::AttentionSession
         ) {
             return None;
         }

@@ -73,19 +73,27 @@ pub fn ssh_command(worker: &Worker, script: &str, interactive: bool, attach: boo
     } else {
         "StrictHostKeyChecking=yes"
     };
-    let mut args: Vec<String> = [
-        "ssh",
-        tty,
-        "-o",
-        "ConnectTimeout=5",
-        "-o",
-        "ConnectionAttempts=1",
-        "-o",
-        trust,
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
+    let mut args = vec!["ssh".to_owned()];
+    crate::lan::add_options(
+        &mut args,
+        worker
+            .destination
+            .as_deref()
+            .expect("ssh_command requires a remote computer"),
+    );
+    args.extend(
+        [
+            tty,
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            trust,
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
     if !interactive {
         args.extend(["-o", "BatchMode=yes"].into_iter().map(str::to_owned));
     }
@@ -163,7 +171,8 @@ fn run_computer_command(
 ) -> Result<CommandResult, CommandError> {
     let command = computer_command(worker, script, interactive, false);
     let result = run_command(cancel, &command, timeout, interactive);
-    if matches!(result, Err(CommandError::Timeout(_)))
+    if (matches!(result, Err(CommandError::Timeout(_)))
+        || result.as_ref().is_ok_and(|result| result.code == 255))
         && command.iter().any(|arg| arg == "ControlMaster=auto")
         && let Some(destination) = worker.destination.as_deref()
     {
@@ -233,6 +242,9 @@ pub fn failure(code: i32, stderr: &str) -> (Status, String) {
 }
 
 pub fn probe(cancel: &Cancel, worker: &Worker, interactive: bool) -> Inventory {
+    if let Some(destination) = &worker.destination {
+        crate::lan::prepare(cancel, destination, interactive);
+    }
     let mut inventory = Inventory {
         worker: worker.clone(),
         sessions: Vec::new(),
@@ -356,6 +368,27 @@ pub fn agent_status(
         return Err(failure(result.code, &result.stderr).1);
     }
     crate::tmux::parse_status(&result.stdout)
+}
+
+/// Optional reporting setup uses the same bounded, noninteractive transport as
+/// inventory. Never retry: an interrupted installation may already have written.
+pub(crate) fn reporting_setup(
+    cancel: &Cancel,
+    worker: &Worker,
+    token: Option<&str>,
+) -> Result<crate::reporting::Response, String> {
+    let result = run_computer_command(
+        cancel,
+        worker,
+        &crate::reporting::command(token),
+        Duration::from_secs(20),
+        false,
+    )
+    .map_err(|error| error.to_string())?;
+    if result.code != 0 {
+        return Err(failure(result.code, &result.stderr).1);
+    }
+    crate::reporting::parse(&result.stdout, token.is_some())
 }
 
 pub fn scan(cancel: &Cancel, workers: Vec<Worker>) -> mpsc::Receiver<Inventory> {

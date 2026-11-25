@@ -9,7 +9,7 @@ enum StatusStyle {
         case .error: return "error"
         case .working: return "working"
         case .done: return "done"
-        case nil: return "no agent"
+        case nil: return "without reported status"
         }
     }
 
@@ -32,7 +32,7 @@ enum StatusStyle {
         }
     }
 
-    /// Waiting first, then error, working, done; sessions without an agent last.
+    /// Waiting first, then error, working, done; unreported sessions last.
     static func order(_ lhs: RemoteSession, _ rhs: RemoteSession) -> Bool {
         let left = lhs.status?.priority ?? Int.max
         let right = rhs.status?.priority ?? Int.max
@@ -58,6 +58,15 @@ enum AccessibilityID {
     static let offlineBanner = "dashboard.offline"
     static let storageError = "dashboard.storageError"
     static let storageSetAside = "dashboard.storageSetAside"
+    static let dashboardMode = "dashboard.mode"
+    static let attentionMode = "dashboard.mode.attention"
+    static let browseMode = "dashboard.mode.browse"
+    static let attentionCount = "dashboard.attention.count"
+    static let attentionErrors = "dashboard.attention.errors"
+    static let attentionCoverage = "dashboard.attention.coverage"
+    static func attentionRow(_ id: InboxSession.ID) -> String {
+        "attention.\(id.computerID.uuidString).\(id.lifetime.id).\(id.lifetime.serverPID).\(id.lifetime.serverStarted).\(id.lifetime.created)"
+    }
     static func computerSection(_ id: UUID) -> String { "computer.\(id.uuidString)" }
     static func computerStatus(_ id: UUID) -> String { "computer.\(id.uuidString).status" }
     static func computerEdit(_ id: UUID) -> String { "computer.\(id.uuidString).edit" }
@@ -71,10 +80,26 @@ enum AccessibilityID {
     static let endSessionProgress = "endSession.progress"
     static let endSessionError = "endSession.error"
 
+    static let reportingSetup = "dashboard.attention.reportingSetup"
+    static let reportingScreen = "reportingSetup"
+    static let reportingDone = "reportingSetup.done"
+    static let reportingConfirmation = "reportingSetup.confirmation"
+    static let reportingConfirm = "reportingSetup.confirm"
+    static let reportingCancel = "reportingSetup.cancel"
+    static func reportingComputer(_ id: UUID) -> String { "reportingSetup.\(id.uuidString)" }
+    static func reportingCheck(_ id: UUID) -> String { reportingComputer(id) + ".check" }
+    static func reportingMessage(_ id: UUID) -> String { reportingComputer(id) + ".message" }
+    static func reportingCapability(_ id: UUID) -> String { reportingComputer(id) + ".capability" }
+    static func reportingTarget(_ computer: UUID, _ target: String) -> String { reportingComputer(computer) + ".target." + target }
+    static func reportingAction(_ computer: UUID, _ target: String) -> String { reportingTarget(computer, target) + ".action" }
+
     static let formName = "computerForm.name"
     static let formHostname = "computerForm.hostname"
     static let formPort = "computerForm.port"
     static let formUsername = "computerForm.username"
+    static let formLANHostname = "computerForm.lanHostname"
+    static let formLANPort = "computerForm.lanPort"
+    static func nearbyComputer(_ id: String) -> String { "computerForm.nearby.\(id)" }
     static let formAuthentication = "computerForm.authentication"
     static let formAuthKey = "computerForm.authentication.key"
     static let formAuthPassword = "computerForm.authentication.password"

@@ -18,6 +18,12 @@ struct ComputerFormView: View {
     @State private var copied = false
     @State private var confirmDelete = false
     @State private var confirmForgetHostKey = false
+    @State private var nearby = NearbyComputers()
+    @State private var lanHostname = ""
+    @State private var lanPortText = "22"
+    @State private var pairing: Computer?
+    @State private var pairingAddress: SSHAddress?
+    @State private var confirmPairing = false
 
     init(target: ComputerFormTarget) {
         switch target {
@@ -29,6 +35,8 @@ struct ComputerFormView: View {
             original = computer
             _draft = State(initialValue: computer)
             _portText = State(initialValue: String(computer.port))
+            _lanHostname = State(initialValue: computer.lanAddress?.hostname ?? "")
+            _lanPortText = State(initialValue: String(computer.lanAddress?.port ?? 22))
         }
     }
 
@@ -44,8 +52,11 @@ struct ComputerFormView: View {
                             .accessibilityIdentifier(AccessibilityID.formError)
                     }
                 }
+                if isNew { nearbySection }
                 computerSection
                 authenticationSection
+                lanSection
+                if !isNew { nearbySection }
                 if let original {
                     hostKeySection(original)
                     Section {
@@ -85,9 +96,17 @@ struct ComputerFormView: View {
             } message: {
                 Text("Only do this when you know the server's key changed, for example after a reinstall. Delux will ask you to verify the new fingerprint before signing in again.")
             }
+            .confirmationDialog("Use this LAN address for \(pairing?.name ?? "the computer")?",
+                                isPresented: $confirmPairing, titleVisibility: .visible) {
+                Button("Use LAN Address", action: pairAddress)
+            } message: {
+                Text("The saved computer, credentials, and trusted host key stay the same. Its current address remains the fallback. The LAN server must prove it has the same host key.")
+            }
             .onChange(of: draft.authentication, initial: true) { _, kind in
                 if kind == .key { loadPublicKey() }
             }
+            .onAppear { nearby.start() }
+            .onDisappear { nearby.stop() }
         }
         .interactiveDismissDisabled()
     }
@@ -116,6 +135,89 @@ struct ComputerFormView: View {
             Text("Computer")
         } footer: {
             Text("Use the address you would type after ssh. Tailscale names and 100.x addresses work while the Tailscale app is connected.")
+        }
+    }
+
+    private var lanSection: some View {
+        Section {
+            TextField("LAN hostname or IP", text: $lanHostname)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier(AccessibilityID.formLANHostname)
+            if !lanHostname.isEmpty {
+                TextField("LAN port", text: $lanPortText)
+                    .keyboardType(.numberPad)
+                    .accessibilityIdentifier(AccessibilityID.formLANPort)
+            }
+        } header: {
+            Text("LAN address (optional)")
+        } footer: {
+            Text("Prefer this address on your network; keep the address above as fallback. First connect and verify the computer's host key using its primary address. Both routes must use the same SSH host key. Leave blank for a single address.")
+        }
+    }
+
+    private var nearbySection: some View {
+        Section {
+            if let error = nearby.error {
+                Text(error).foregroundStyle(.secondary)
+            } else if nearby.computers.isEmpty {
+                Text("Looking for nearby SSH computers…")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(nearby.computers) { computer in
+                Menu {
+                    Button(isNew ? "Use as Primary Address" : "Use as LAN Address") {
+                        if isNew {
+                            draft.hostname = computer.address.hostname
+                            portText = String(computer.address.port)
+                            if draft.name.isEmpty { draft.name = computer.name }
+                        } else {
+                            lanHostname = computer.address.hostname
+                            lanPortText = String(computer.address.port)
+                        }
+                    }
+                    if isNew, !model.computers.isEmpty {
+                        Menu("Use for Saved Computer") {
+                            ForEach(model.computers) { saved in
+                                Button(saved.name) {
+                                    pairing = saved
+                                    pairingAddress = computer.address
+                                    confirmPairing = true
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text(computer.name)
+                        Text("\(computer.address.hostname):\(String(computer.address.port))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier(AccessibilityID.nearbyComputer(computer.id))
+            }
+        } header: {
+            Text("Nearby computers")
+        } footer: {
+            Text("Finds SSH services advertised through Bonjour/mDNS. If a computer does not advertise SSH, enter its LAN address manually. An advertisement is not proof of identity; verify the SSH fingerprint before trusting a new computer.")
+        }
+    }
+
+    private func pairAddress() {
+        guard let saved = pairing, let address = pairingAddress,
+              var current = model.computer(saved.id), current == saved else {
+            return fail("The saved computer changed. Choose it again before pairing.")
+        }
+        current.lanAddress = address
+        do {
+            try model.update(current)
+            cancel()
+        } catch {
+            fail(error.localizedDescription)
         }
     }
 
@@ -226,6 +328,17 @@ struct ComputerFormView: View {
             return fail("Enter a port between 1 and 65535.")
         }
         computer.port = port
+        let lanHost = lanHostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if lanHost.isEmpty {
+            computer.lanAddress = nil
+        } else {
+            guard !lanHost.contains(where: \.isWhitespace),
+                  let lanPort = Int(lanPortText.trimmingCharacters(in: .whitespaces)),
+                  (1...65535).contains(lanPort) else {
+                return fail("Enter a LAN hostname without spaces and a port between 1 and 65535.")
+            }
+            computer.lanAddress = SSHAddress(hostname: lanHost, port: lanPort)
+        }
         guard !computer.username.isEmpty else { return fail("Enter the username.") }
 
         var credentialsChanged = false

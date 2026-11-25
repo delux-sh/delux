@@ -38,6 +38,19 @@ Claude uses `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`; Cod
 
 Claude's `StopFailure` reports `error`, not successful completion. Hook ownership matches Delux's generated command shape; commands that merely mention the reporter, or combine it with other shell commands, are left untouched.
 
+## Guided setup
+
+In CLI Attention, press `s` (with the sidebar focused), or tap **Set up reporting** below iPhone Coverage. Inspection is read-only and requires Python 3 on the computer being checked; normal session browsing does not.
+
+Setup distinguishes native tmux capability, observed reporting, missing/outdated reporters, installed-but-unconfirmed reporters, and unknown or conflicting configuration. It identifies running agents and their profiles from process metadata, not terminal text. Native capability alone does not prove that a tool is reporting.
+
+Choose a target to review its computer, agent, profile and exact proposed file changes. Confirm explicitly (`y` on CLI, **Install reporter** on iPhone). Pi/OMP extensions and OpenCode plugins are bundled and installed over the existing SSH route without requiring or upgrading remote Delux. Claude, Codex and Gemini hooks require a compatible `delux agents` installer on that computer; otherwise setup gives manual guidance.
+
+Changed processes/profiles/files invalidate a proposal. Unowned files, symlinked paths and hardlinked adapter files are not overwritten. Unsupported or ambiguous configurations remain unknown rather than guessed. An interrupted installation is not retried automatically; inspect again before deciding what to do.
+
+Installation never restarts an agent or replaces the connected terminal. Restart/resume yourself at a safe point. Already-open questions are not replayed, and reporting is confirmed only when a real status arrives.
+
+
 ## Gemini CLI
 
 Run `delux agents install gemini`. Gemini CLI uses `$GEMINI_CLI_HOME/.gemini/settings.json` when `GEMINI_CLI_HOME` is non-empty, otherwise `~/.gemini/settings.json`.
@@ -54,7 +67,15 @@ delux agents install pi       # or: delux agents install omp
 
 New sessions pick it up. It reports `working` while the main agent runs, `waiting` while an approval, plan review, question or blocking prompt is open, and `done` when the run ends; it clears the status when the session starts and when it shuts down. Subagents do not change the status. Outside tmux it does nothing.
 
-Both use `$PI_CODING_AGENT_DIR/extensions/` when that variable is non-empty. Otherwise Pi uses `~/.pi/agent/extensions/`, and OMP uses `~/${PI_CONFIG_DIR:-.omp}/agent/extensions/`. If they share a directory, Delux installs one identical adapter rather than two extensions that would both load. Status reads that shared file for both tools, and uninstalling either removes it for both.
+Pi uses `$PI_CODING_AGENT_DIR/extensions/` when non-empty, otherwise `~/.pi/agent/extensions/`. OMP uses `~/${PI_CONFIG_DIR:-.omp}/agent/extensions/` for its default profile, honoring `PI_CODING_AGENT_DIR` except when it is an inherited named-profile directory. A named OMP profile uses `~/${PI_CONFIG_DIR:-.omp}/profiles/<profile>/agent/extensions/` and ignores `PI_CODING_AGENT_DIR`.
+
+The installer resolves `OMP_PROFILE` before `PI_PROFILE`; empty or `default` selects the default profile. Run it with the intended profile:
+
+```sh
+OMP_PROFILE=work delux agents install omp
+```
+
+Guided setup also reads the running OMP process's `--profile` argument. The standalone installer uses its own environment, not another process's arguments. If Pi and OMP resolve to the same extension directory, Delux installs one identical adapter; uninstalling either removes it for both. Restart/resume an already-running agent at a safe point after installation. Events for questions already open before the adapter loaded are not replayed, so installation alone does not make an existing ask appear in Attention.
 
 ## OpenCode
 

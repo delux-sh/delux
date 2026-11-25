@@ -5,6 +5,11 @@ enum AuthenticationKind: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+struct SSHAddress: Codable, Hashable {
+    var hostname: String
+    var port: Int = 22
+}
+
 struct Computer: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
@@ -13,6 +18,8 @@ struct Computer: Codable, Identifiable, Hashable {
     var username: String
     var authentication: AuthenticationKind = .key
     var hostKeyFingerprint: String?
+    /// An alternate route to the same SSH server, verified with the same pinned key.
+    var lanAddress: SSHAddress?
 }
 
 enum AgentStatus: String, Codable {
@@ -36,9 +43,116 @@ struct RemoteSession: Identifiable, Hashable {
     var created: Int64
     var status: AgentStatus?
 
+    var lifetime: SessionLifetime {
+        SessionLifetime(id: id, serverPID: serverPID, serverStarted: serverStarted, created: created)
+    }
+
     func hasSameLifetime(as other: RemoteSession) -> Bool {
         id == other.id && serverPID == other.serverPID &&
             serverStarted == other.serverStarted && created == other.created
+    }
+}
+
+/// tmux IDs can be reused after a server restart or session replacement.
+struct SessionLifetime: Hashable {
+    let id: String
+    let serverPID: Int64
+    let serverStarted: Int64
+    let created: Int64
+}
+
+struct InboxSession: Identifiable {
+    struct ID: Hashable {
+        let computerID: UUID
+        let lifetime: SessionLifetime
+    }
+
+    let computer: Computer
+    let session: RemoteSession
+    var id: ID { ID(computerID: computer.id, lifetime: session.lifetime) }
+}
+
+struct ComputerCoverage: Identifiable {
+    enum Availability: Equatable {
+        case checked, checking, unavailable
+    }
+
+    let computer: Computer
+    let availability: Availability
+    let unreportedCount: Int
+    var id: UUID { computer.id }
+}
+
+/// Keeps an inventory-order ledger, not a waiting-order ledger: temporarily
+/// working sessions return to their old place, and new lifetimes append.
+struct AttentionInbox {
+    private var order: [InboxSession.ID] = []
+    private(set) var waiting: [InboxSession] = []
+    private(set) var errors: [InboxSession] = []
+    private(set) var coverage: [ComputerCoverage] = []
+
+    var unreportedCount: Int { coverage.reduce(0) { $0 + $1.unreportedCount } }
+    var isComplete: Bool {
+        !coverage.isEmpty && coverage.allSatisfy { $0.availability == .checked } && unreportedCount == 0
+    }
+    var showsErrorsByDefault: Bool { waiting.isEmpty && !errors.isEmpty }
+
+    mutating func update(computers: [Computer], states: [UUID: ComputerState], isOnline: Bool) {
+        var inventory: [InboxSession.ID: InboxSession] = [:]
+        var additions: [InboxSession.ID] = []
+        var confirmed = Set<UUID>()
+        var known = Set(order)
+        coverage = computers.map { computer in
+            let state = states[computer.id] ?? ComputerState()
+            let availability: ComputerCoverage.Availability
+            if !isOnline {
+                availability = .unavailable
+            } else {
+                switch state.phase {
+                case .loaded:
+                    confirmed.insert(computer.id)
+                    availability = state.isRefreshing ? .checking : .checked
+                case .idle, .loading:
+                    availability = .checking
+                case .failed, .hostKeyUnknown, .hostKeyChanged:
+                    availability = .unavailable
+                }
+            }
+            var newEntries: [InboxSession] = []
+            for session in state.sessions {
+                let entry = InboxSession(computer: computer, session: session)
+                if inventory.updateValue(entry, forKey: entry.id) == nil, !known.contains(entry.id) {
+                    newEntries.append(entry)
+                }
+            }
+            // Only new lifetimes need ordering; metadata never moves existing rows.
+            newEntries.sort { lhs, rhs in
+                let left = lhs.session
+                let right = rhs.session
+                if left.created != right.created { return left.created < right.created }
+                if left.serverStarted != right.serverStarted { return left.serverStarted < right.serverStarted }
+                if left.serverPID != right.serverPID { return left.serverPID < right.serverPID }
+                return left.id < right.id
+            }
+            for entry in newEntries { additions.append(entry.id) }
+            let unreported = confirmed.contains(computer.id)
+                ? state.sessions.reduce(0) { $0 + ($1.status == nil ? 1 : 0) } : 0
+            return ComputerCoverage(computer: computer, availability: availability, unreportedCount: unreported)
+        }
+        order.removeAll { inventory[$0] == nil }
+        for id in additions where known.insert(id).inserted {
+            order.append(id)
+        }
+        waiting.removeAll(keepingCapacity: true)
+        errors.removeAll(keepingCapacity: true)
+        for id in order {
+            guard confirmed.contains(id.computerID), let entry = inventory[id] else { continue }
+            switch entry.session.status {
+            case .waiting: waiting.append(entry)
+            case .error: errors.append(entry)
+            default: break
+            }
+        }
     }
 }
 
