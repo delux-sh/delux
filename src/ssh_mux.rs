@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard, TryLockError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::cancel::Cancel;
 use crate::process::run_command;
@@ -266,10 +266,12 @@ pub(crate) fn reset_destination(destination: &str) {
     if let Some(directory) = directory {
         let cancel = Cancel::from_flag(Arc::new(AtomicBool::new(false)));
         close_master(&cancel, &control_path(&directory), destination);
+        crate::lan::invalidate(destination);
     }
 }
 
 pub(crate) fn begin() {
+    crate::lan::clear();
     *MULTIPLEXER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -310,21 +312,32 @@ fn close_masters(directory: &Path, destinations: BTreeSet<String>) {
 }
 
 fn close_master(cancel: &Cancel, path: &str, destination: &str) {
-    let args = [
-        "ssh",
-        "-O",
-        "exit",
-        "-o",
-        path,
-        "-o",
-        "ControlMaster=no",
-        "-o",
-        "BatchMode=yes",
-        "--",
-        destination,
-    ]
-    .map(str::to_owned);
-    let _ = run_command(cancel, &args, Duration::from_secs(1), false);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    for options in crate::lan::used_options(destination) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut args = vec!["ssh".to_owned()];
+        args.extend(options);
+        args.extend(
+            [
+                "-O",
+                "exit",
+                "-o",
+                path,
+                "-o",
+                "ControlMaster=no",
+                "-o",
+                "BatchMode=yes",
+                "--",
+                destination,
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        let _ = run_command(cancel, &args, remaining, false);
+    }
 }
 
 #[cfg(test)]

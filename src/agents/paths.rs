@@ -9,11 +9,7 @@ pub(super) enum Directory {
         variable: &'static str,
         suffix: &'static str,
     },
-    HomeVariable {
-        variable: &'static str,
-        default: &'static str,
-        suffix: &'static str,
-    },
+    Omp,
     Config {
         variable: &'static str,
         default: &'static str,
@@ -44,15 +40,44 @@ impl Directory {
                 };
                 Ok(root.join(suffix))
             }
-            Self::HomeVariable {
-                variable: name,
-                default,
-                suffix,
-            } => {
-                let root = variable(name)
+            Self::Omp => {
+                let profile =
+                    omp_profile(variable("OMP_PROFILE").or_else(|| variable("PI_PROFILE")))?;
+                let config = variable("PI_CONFIG_DIR")
                     .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| (*default).into());
-                Ok(home()?.join(root).join(suffix))
+                    .unwrap_or_else(|| ".omp".into());
+                // Node path.join(home, config) retains home even for /config.
+                let root = normalize_absolute(
+                    &home()?.join(
+                        Path::new(&config)
+                            .strip_prefix("/")
+                            .unwrap_or(Path::new(&config)),
+                    ),
+                );
+                if let Some(profile) = profile {
+                    return Ok(root.join("profiles").join(profile).join("agent"));
+                }
+                if let Some(directory) =
+                    variable("PI_CODING_AGENT_DIR").filter(|value| !value.is_empty())
+                {
+                    let inherited = omp_profile(variable("PI_PROFILE"))
+                        .ok()
+                        .flatten()
+                        .map(|profile| root.join("profiles").join(profile).join("agent"));
+                    if inherited.as_ref().map(|path| path.as_os_str())
+                        != Some(directory.as_os_str())
+                    {
+                        let directory = PathBuf::from(directory);
+                        return if directory.is_absolute() {
+                            Ok(normalize_absolute(&directory))
+                        } else {
+                            std::env::current_dir()
+                                .map(|cwd| normalize_absolute(&cwd.join(directory)))
+                                .map_err(|error| error.to_string())
+                        };
+                    }
+                }
+                Ok(root.join("agent"))
             }
             Self::Config {
                 variable: name,
@@ -67,6 +92,47 @@ impl Directory {
             }
         }
     }
+}
+
+fn normalize_absolute(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn omp_profile(value: Option<OsString>) -> Result<Option<String>, String> {
+    let Some(value) = value else { return Ok(None) };
+    let value = value
+        .to_str()
+        .ok_or("Invalid OMP profile: expected UTF-8")?
+        .trim();
+    if value.is_empty() || value == "default" {
+        return Ok(None);
+    }
+    let base = value.split('.').next().unwrap_or_default();
+    let reserved = matches!(base, "con" | "prn" | "aux" | "nul")
+        || ((base.starts_with("com") || base.starts_with("lpt"))
+            && base.len() == 4
+            && base.as_bytes()[3].is_ascii_digit());
+    if value.len() > 64
+        || !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value
+            .bytes()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || b"._-".contains(&ch))
+        || value.ends_with('.')
+        || reserved
+    {
+        return Err("Invalid OMP profile: use 1–64 lowercase letters, digits, dots, underscores or hyphens; no trailing dot or reserved device name".into());
+    }
+    Ok(Some(value.into()))
 }
 
 pub(super) struct Context {
@@ -93,7 +159,10 @@ impl Context {
                 .config_env
                 .and_then(&variable)
                 .filter(|value| !value.is_empty());
-            fallback_parent_detection.push(override_path.is_none() && agent.detect_fallback_parent);
+            let omp_override = matches!(agent.directory, Directory::Omp)
+                && variable("PI_CODING_AGENT_DIR").is_some_and(|value| !value.is_empty());
+            fallback_parent_detection
+                .push(override_path.is_none() && !omp_override && agent.detect_fallback_parent);
             directories.push(match override_path {
                 Some(path) => PathBuf::from(path),
                 None => agent.directory.resolve(home.as_deref(), &variable)?,

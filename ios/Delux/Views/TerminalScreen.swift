@@ -13,7 +13,8 @@ struct TerminalScreen: View {
             }
             TerminalHostView(controller: controller, isConnected: controller.state.isConnected, keyboardShown: $keyboardShown)
         }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
+        // UIKit owns both keyboard avoidance and the bottom safe area.
+        .ignoresSafeArea(edges: .bottom)
         .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -68,7 +69,7 @@ struct TerminalScreen: View {
     private var statusText: String {
         switch controller.state {
         case .connecting: return "Connecting…"
-        case .connected: return "Connected"
+        case .connected: return controller.isUsingLAN ? "Connected · LAN" : "Connected"
         case .reconnecting: return "Reconnecting…"
         case .suspended: return "Paused"
         case .disconnected: return "Disconnected"

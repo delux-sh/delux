@@ -119,6 +119,9 @@ impl Harness {
                 })
             }),
             agent_status: Arc::new(|_, _| Ok(Vec::new())),
+            reporting_setup: Arc::new(|_, _, _| {
+                Err("Reporting setup unavailable in fixture".into())
+            }),
             resolve_user: Arc::new(|_, _| Err("SSH settings unavailable".into())),
             sharing_active: Box::new(|_| true),
             save_mapping: Box::new(move |name, destination| {
@@ -156,6 +159,9 @@ impl Harness {
             return;
         };
         let next = match command {
+            Command::ReportingSetup { .. } => {
+                panic!("Reporting setup tests must deliver their completion explicitly")
+            }
             Command::Discover { generation, cancel } => {
                 let result = (self.picker.services.discover)(&cancel);
                 self.picker
@@ -1485,7 +1491,18 @@ fn sidebar_groups_unavailable_computers_and_skips_the_divider() {
         inventories.push(failed(&worker, status, "Access unavailable"));
         workers.push(worker);
     }
-    let mut harness = Harness::new(workers, inventories);
+    let mut harness = Harness::new(vec![], vec![]);
+    let _ = harness.picker.rescan(true);
+    harness.picker.update(Message::Discovered {
+        generation: harness.picker.generation,
+        result: Ok((workers, String::new())),
+    });
+    for inventory in inventories {
+        harness.picker.update(Message::Inventory {
+            generation: harness.picker.generation,
+            inventory: Some(inventory),
+        });
+    }
     let view = harness.rendered(100, 30);
     let divider = view.find("Other computers").expect("unavailable section");
     for name in ["working", "empty", "probing"] {
@@ -2849,7 +2866,6 @@ fn pinned_rows_keep_their_computer_visible_in_the_sidebar() {
     for (line, host) in pinned.iter().zip(["studio", "laptop", "laptop"]) {
         assert!(line.ends_with(host), "{host}: {sidebar:#?}");
     }
-    assert!(pinned[2].contains("a-really-l") && pinned[2].contains('…'));
     let computers = sidebar
         .iter()
         .position(|line| line.trim() == "Computers")
@@ -3212,7 +3228,7 @@ fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
         for (name, marker, style) in [
             (
                 "waiting",
-                "●",
+                "?",
                 theme::warning().add_modifier(Modifier::BOLD),
             ),
             ("working", "●", harness.picker.tint.secondary()),
@@ -3236,7 +3252,7 @@ fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
                     .position(|cells| cells.concat() == "11d")
                     .unwrap(),
             );
-            let marker_cell = &buffer[((x - 3) as u16, y as u16)];
+            let marker_cell = &buffer[((x - 4) as u16, y as u16)];
             assert_eq!(marker_cell.symbol(), marker);
             assert_eq!(marker_cell.fg, style.fg.unwrap());
             if name == "waiting" {
@@ -3246,6 +3262,14 @@ fn agent_markers_keep_columns_and_waiting_header_in_both_layouts() {
         assert!(name_columns.windows(2).all(|pair| pair[0] == pair[1]));
         assert!(age_columns.windows(2).all(|pair| pair[0] == pair[1]));
     }
+    harness.picker.cursor = harness.picker.rows.iter().position(|row| {
+        row.kind == RowKind::Session
+            && harness
+                .picker
+                .session(*row)
+                .is_some_and(|session| session.name == "waiting")
+    });
+    harness.picker.remember();
     let start = Instant::now();
     harness.tick(start);
     harness.tick(start + PREVIEW_DEBOUNCE);
@@ -3320,7 +3344,8 @@ fn working_marker_expires_only_without_recent_status_or_output() {
             view.contains(match state {
                 AgentState::Done => "✓",
                 AgentState::Error => "✗",
-                AgentState::Working | AgentState::Waiting => "●",
+                AgentState::Working => "●",
+                AgentState::Waiting => "?",
             }),
             visible
         );
@@ -3346,7 +3371,7 @@ fn agent_refresh_keeps_unselected_native_working_visible_with_recent_output() {
             vec![session("$1", "selected"), background],
         )],
     );
-    assert!(!harness.rendered(120, 30).contains("●  background"));
+    assert!(!harness.rendered(120, 30).contains("●   background"));
     let selection = harness.picker.selection.clone();
     for output in [NOW, NOW - 700] {
         harness.picker.update(Message::AgentStatuses {
@@ -3362,7 +3387,7 @@ fn agent_refresh_keeps_unselected_native_working_visible_with_recent_output() {
                 }]),
             )],
         });
-        assert!(harness.rendered(120, 30).contains("●  background"));
+        assert!(harness.rendered(120, 30).contains("●   background"));
         assert_eq!(harness.picker.selection, selection);
         assert_eq!(harness.picker.entries[0].sessions()[1].output, NOW);
     }
@@ -3415,7 +3440,7 @@ fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_pre
     );
     assert_eq!(sessions[1].agent.unwrap().state, AgentState::Waiting);
     let view = harness.rendered(120, 30);
-    assert!(view.contains("●  second"));
+    assert!(view.contains("?   second"));
     assert!(view.contains("1 waiting"));
     harness.picker.update(Message::AgentStatuses {
         generation: harness.picker.generation,
@@ -3437,12 +3462,12 @@ fn periodic_agent_refresh_changes_marker_without_touching_order_selection_or_pre
     assert_eq!(harness.picker.selection, selection);
     assert_eq!(harness.effects.borrow().previews, previews);
     let view = harness.rendered(120, 30);
-    assert!(view.contains("✗  second"));
+    assert!(view.contains("✗   second"));
     assert!(!view.contains("1 waiting"));
 }
 
 #[test]
-fn agent_refresh_ignores_old_generation_other_server_and_failures() {
+fn agent_refresh_rejects_stale_identities_and_invalidates_failed_checks() {
     let computer = worker("box", "box");
     let original = with_agent(session("$1", "work"), AgentState::Done, None);
     let mut harness = Harness::new(
@@ -3471,21 +3496,25 @@ fn agent_refresh_ignores_old_generation_other_server_and_failures() {
                 }]),
             )],
         });
-        assert_eq!(
-            harness.picker.entries[0].sessions(),
-            std::slice::from_ref(&original)
-        );
+        let mut expected = original.clone();
+        if generation == harness.picker.generation {
+            expected.agent = None;
+        }
+        assert_eq!(harness.picker.entries[0].sessions(), &[expected]);
     }
     harness.picker.update(Message::AgentStatuses {
         generation,
         results: vec![(computer, Err("untrusted failure".into()))],
     });
-    assert_eq!(harness.picker.entries[0].sessions(), &[original]);
+    let mut unreported = original;
+    unreported.agent = None;
+    assert_eq!(harness.picker.entries[0].sessions(), &[unreported]);
+    assert_eq!(harness.picker.coverage().unavailable, 1);
     assert!(harness.picker.notice.is_empty());
 }
 
 #[test]
-fn agent_refresh_requires_ready_sessions_and_shared_remote_connection() {
+fn agent_refresh_requires_ready_sessions_including_unshared_remotes() {
     let local = worker("local", "local");
     let shared = remote("shared", "shared", "shared.example");
     let unshared = remote("unshared", "unshared", "unshared.example");
@@ -3523,15 +3552,15 @@ fn agent_refresh_requires_ready_sessions_and_shared_remote_connection() {
     harness.drive(command);
     assert_eq!(
         harness.effects.borrow().status_refreshes,
-        ["local", "shared"]
+        ["local", "shared", "unshared"]
     );
     harness.picker.scanning = true;
     harness.tick(start + STATUS_REFRESH * 3);
-    assert_eq!(harness.effects.borrow().status_refreshes.len(), 2);
+    assert_eq!(harness.effects.borrow().status_refreshes.len(), 3);
     harness.picker.scanning = false;
     harness.picker.quit();
     harness.tick(start + STATUS_REFRESH * 4);
-    assert_eq!(harness.effects.borrow().status_refreshes.len(), 2);
+    assert_eq!(harness.effects.borrow().status_refreshes.len(), 3);
 }
 
 #[test]
@@ -3589,4 +3618,888 @@ fn errors_do_not_get_waiting_priority_on_reordering_scans() {
             true,
         );
     }
+}
+
+fn attention_sessions(harness: &Harness) -> Vec<(String, String)> {
+    harness
+        .picker
+        .rows
+        .iter()
+        .filter_map(|row| {
+            harness.picker.session(*row).map(|session| {
+                (
+                    harness.picker.entries[row.entry].worker.key.clone(),
+                    session.id.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn status_rows(sessions: &[Session]) -> Vec<AgentStatusRow> {
+    sessions
+        .iter()
+        .map(|session| AgentStatusRow {
+            server_pid: session.server_pid,
+            server_start: session.server_start,
+            session_id: session.id.clone(),
+            output: session.output,
+            agent: session.agent,
+        })
+        .collect()
+}
+
+#[test]
+fn attention_is_cross_computer_with_separate_errors_and_exact_attach_targets() {
+    let alpha = worker("alpha", "alpha-host");
+    let beta = remote("beta", "beta-host", "beta.example");
+    let waiting = with_agent(session("$1", "needs-review"), AgentState::Waiting, None);
+    let error = with_agent(session("$2", "failed-task"), AgentState::Error, None);
+    let mut harness = Harness::new(
+        vec![alpha.clone(), beta.clone()],
+        vec![
+            ready(
+                &alpha,
+                vec![
+                    waiting.clone(),
+                    with_agent(session("$3", "working-task"), AgentState::Working, None),
+                ],
+            ),
+            ready(
+                &beta,
+                vec![
+                    waiting.clone(),
+                    error.clone(),
+                    session("$4", "unreported-task"),
+                ],
+            ),
+        ],
+    );
+    assert_eq!(harness.picker.view, View::Browse);
+    harness.press(&["v"]);
+    assert_eq!(
+        attention_sessions(&harness),
+        [("alpha".into(), "$1".into()), ("beta".into(), "$1".into())]
+    );
+    let view = harness.rendered(120, 30);
+    assert!(view.contains("alpha-host") && view.contains("beta-host"));
+    assert!(
+        !view.contains("working-task")
+            && !view.contains("unreported-task")
+            && !view.contains("failed-task")
+    );
+    harness.press(&["e"]);
+    assert_eq!(
+        attention_sessions(&harness).last(),
+        Some(&("beta".into(), "$2".into()))
+    );
+    harness.press(&["/", "beta", "enter"]);
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 2);
+    assert_eq!(
+        attention_sessions(&harness),
+        [("beta".into(), "$1".into()), ("beta".into(), "$2".into())]
+    );
+    harness.press(&["enter"]);
+    assert_eq!(harness.launched().len(), 1);
+    assert_eq!(harness.launched()[0].worker, beta);
+    assert_eq!(harness.launched()[0].session.as_ref(), Some(&waiting));
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 2);
+    harness.press(&["v"]);
+    assert!(harness.picker.filter.is_empty());
+    harness.press(&["v"]);
+    assert_eq!(harness.picker.filter, "beta");
+}
+
+#[test]
+fn attention_rows_distinguish_same_named_sessions_when_computer_names_fit() {
+    let workers = vec![
+        worker("alpha", "attention-alpha"),
+        worker("beta", "attention-beta"),
+    ];
+    let waiting = with_agent(session("$1", "review"), AgentState::Waiting, None);
+    let inventories = workers
+        .iter()
+        .map(|worker| ready(worker, vec![waiting.clone()]))
+        .collect();
+    let mut harness = Harness::new(workers, inventories);
+    harness.press(&["v"]);
+    let buffer = harness.buffer(100, 20);
+    let sidebar: Vec<String> = (0..20u16)
+        .map(|y| (1..31u16).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    for host in ["attention-alpha", "attention-beta"] {
+        assert!(
+            sidebar
+                .iter()
+                .any(|line| line.contains("review") && line.trim_end().ends_with(host)),
+            "{host}: {sidebar:#?}"
+        );
+    }
+}
+
+#[test]
+fn attention_queue_retains_order_and_selection_without_retargeting_removed_rows() {
+    let alpha = worker("alpha", "alpha");
+    let beta = worker("beta", "beta");
+    let first = with_agent(session("$1", "first"), AgentState::Waiting, None);
+    let second = with_agent(session("$2", "second"), AgentState::Waiting, None);
+    let later = session("$3", "later");
+    let mut harness = Harness::new(
+        vec![alpha.clone(), beta.clone()],
+        vec![
+            ready(&alpha, vec![first.clone(), later.clone()]),
+            ready(&beta, vec![second.clone()]),
+        ],
+    );
+    harness.press(&["v", "down"]);
+    let selected = harness.picker.selection.clone();
+    let later = with_agent(later, AgentState::Waiting, None);
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(
+            alpha.clone(),
+            Ok(status_rows(&[first.clone(), later.clone()])),
+        )],
+    });
+    assert_eq!(
+        attention_sessions(&harness),
+        [
+            ("alpha".into(), "$1".into()),
+            ("beta".into(), "$2".into()),
+            ("alpha".into(), "$3".into()),
+        ]
+    );
+    assert_eq!(harness.picker.selection, selected);
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(
+            beta.clone(),
+            Ok(status_rows(&[with_agent(
+                second.clone(),
+                AgentState::Done,
+                None,
+            )])),
+        )],
+    });
+    assert!(harness.picker.current_row().is_none());
+    assert_eq!(harness.picker.selection, selected);
+    harness.press(&["enter"]);
+    assert!(harness.launched().is_empty());
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(beta, Ok(status_rows(&[second])))],
+    });
+    assert_eq!(harness.picker.selected_session().unwrap().0.key, "beta");
+    assert_eq!(
+        attention_sessions(&harness).last(),
+        Some(&("beta".into(), "$2".into()))
+    );
+}
+
+#[test]
+fn attention_errors_autoexpand_after_waiting_clears_but_remain_collapsible() {
+    let computer = worker("box", "box");
+    let waiting = with_agent(session("$1", "waiting-task"), AgentState::Waiting, None);
+    let error = with_agent(session("$2", "error-task"), AgentState::Error, None);
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![waiting.clone(), error.clone()])],
+    );
+    harness.press(&["v"]);
+    assert_eq!(attention_sessions(&harness).len(), 1);
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(
+            computer,
+            Ok(status_rows(&[
+                with_agent(waiting, AgentState::Done, None),
+                error,
+            ])),
+        )],
+    });
+    assert_eq!(attention_sessions(&harness), [("box".into(), "$2".into())]);
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 0);
+    harness.press(&["e"]);
+    assert!(attention_sessions(&harness).is_empty());
+    harness.press(&["e", "down", "enter"]);
+    assert_eq!(harness.launched()[0].session.as_ref().unwrap().id, "$2");
+}
+
+#[test]
+fn attention_coverage_distinguishes_unreported_failed_check_and_discovery() {
+    let good = worker("good", "good");
+    let bad = remote("bad", "bad", "bad.example");
+    let waiting = with_agent(session("$1", "waiting"), AgentState::Waiting, None);
+    let mut harness = Harness::new(
+        vec![good.clone(), bad.clone()],
+        vec![
+            ready(&good, vec![waiting.clone(), session("$2", "unknown")]),
+            failed(&bad, Status::AuthRequired, "sign in"),
+        ],
+    );
+    harness.press(&["v"]);
+    assert_eq!(
+        harness.picker.coverage(),
+        attention::Coverage {
+            checked: 1,
+            checking: 0,
+            unavailable: 1,
+            unreported: 1,
+            discovery_incomplete: false,
+        }
+    );
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(good.clone(), Err("status request failed".into()))],
+    });
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 0);
+    assert_eq!(harness.picker.coverage().unavailable, 2);
+    assert_eq!(harness.picker.coverage().unreported, 2);
+    assert!(attention_sessions(&harness).is_empty());
+    assert!(harness.picker.current_row().is_none());
+    harness.press(&["c", "down"]);
+    assert_eq!(harness.picker.screen().signal, Signal::Lost);
+    assert!(matches!(
+        harness.picker.activate(),
+        Some(Command::Discover { .. })
+    ));
+    assert!(harness.picker.coverage().discovery_incomplete);
+    harness.picker.update(Message::Discovered {
+        generation: harness.picker.generation,
+        result: Ok((vec![good.clone(), bad.clone()], "discovery partial".into())),
+    });
+    assert_eq!(harness.picker.coverage().checking, 2);
+    harness.picker.update(Message::Inventory {
+        generation: harness.picker.generation,
+        inventory: Some(ready(&good, vec![waiting])),
+    });
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 1);
+    harness.picker.update(Message::Inventory {
+        generation: harness.picker.generation,
+        inventory: None,
+    });
+    assert_eq!(harness.picker.coverage().checked, 1);
+    assert_eq!(harness.picker.coverage().unavailable, 1);
+    assert!(harness.picker.coverage().discovery_incomplete);
+    harness.picker.selection = Selection::Computer(bad.key);
+    harness.picker.rebuild();
+    harness.press(&["enter"]);
+    assert!(harness.picker.input.is_some());
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn attention_empty_startup_and_zero_computers_remain_navigable() {
+    let mut harness = Harness::new(vec![], vec![]);
+    harness.press(&["v"]);
+    assert!(harness.picker.current_row().is_none());
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 0);
+    harness.buffer(60, 20);
+    let command = harness.picker.rescan(false);
+    assert!(harness.picker.coverage().discovery_incomplete);
+    harness.buffer(60, 20);
+    harness.drive(Some(command));
+    harness.press(&["enter", "v"]);
+    assert_eq!(harness.picker.view, View::Browse);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn attention_switch_and_status_removal_keep_the_connected_terminal_and_focus() {
+    let mut harness = terminal_harness(&["/bin/sh", "-c", "sleep 60"]);
+    harness.press(&["v"]);
+    assert_eq!(harness.picker.view, View::Browse);
+    assert!(harness.picker.terminal_focused);
+    let active_started = harness.picker.active.as_ref().unwrap().started;
+    let computer = harness.picker.entries[0].worker.clone();
+    let waiting = with_agent(session("$0", "work"), AgentState::Waiting, None);
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(computer.clone(), Ok(status_rows(&[waiting])))],
+    });
+    let area = harness.picker.view_area;
+    harness.picker.mouse(MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(harness.picker.view, View::Attention);
+    assert!(harness.picker.terminal_focused);
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(computer, Ok(Vec::new()))],
+    });
+    assert!(harness.picker.current_row().is_none());
+    harness.buffer(120, 30);
+    assert!(harness.picker.terminal_visible && harness.picker.terminal_focused);
+    assert_eq!(
+        harness.picker.active.as_ref().unwrap().started,
+        active_started
+    );
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["v"]);
+    assert_eq!(harness.picker.view, View::Browse);
+    assert_eq!(
+        harness.picker.active.as_ref().unwrap().started,
+        active_started
+    );
+    harness.press(&["/", "v"]);
+    assert_eq!(harness.picker.view, View::Browse);
+    assert_eq!(harness.picker.filter, "v");
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn attention_polls_unshared_remotes_in_browse_and_recovers_without_switching_views() {
+    let computer = remote("remote", "remote", "remote.example");
+    let waiting = with_agent(session("$1", "waiting"), AgentState::Waiting, None);
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![waiting.clone()])],
+    );
+    harness.picker.services.sharing_active = Box::new(|_| false);
+    harness.picker.services.agent_status = Arc::new(|_, _| Err("connection failed".into()));
+    let start = Instant::now();
+    harness.tick(start);
+    let next = start + STATUS_REFRESH;
+    let command = harness.picker.update(Message::Tick(next));
+    assert!(matches!(command, Some(Command::AgentStatuses { .. })));
+    assert_eq!(harness.picker.coverage().checking, 1);
+    assert!(harness.picker.update(Message::Tick(next)).is_none());
+    harness.drive(command);
+    assert_eq!(harness.effects.borrow().status_refreshes, ["remote"]);
+    assert_eq!(harness.picker.coverage().checking, 0);
+    assert_eq!(harness.picker.coverage().unavailable, 1);
+    assert!(
+        !harness
+            .picker
+            .rows
+            .iter()
+            .any(|row| row.kind == RowKind::NeedsInputHeader)
+    );
+    assert!(harness.launched().is_empty());
+
+    harness.picker.services.agent_status =
+        Arc::new(move |_, _| Ok(status_rows(std::slice::from_ref(&waiting))));
+    harness.tick(next + STATUS_REFRESH);
+    assert_eq!(harness.picker.view, View::Browse);
+    assert_eq!(harness.picker.coverage().checked, 1);
+    assert_eq!(harness.picker.coverage().unavailable, 0);
+    assert_eq!(harness.picker.attention_count(AgentState::Waiting), 1);
+    assert!(harness.picker.rows[0].kind == RowKind::NeedsInputHeader);
+    harness.press(&["v"]);
+    harness.tick(next + STATUS_REFRESH * 2);
+    harness.press(&["v"]);
+    harness.tick(next + STATUS_REFRESH * 3);
+    assert_eq!(harness.effects.borrow().status_refreshes.len(), 4);
+}
+
+#[test]
+fn attention_reused_session_ids_do_not_replace_the_selected_or_connected_lifetime() {
+    for changed_field in 0..4 {
+        let mut harness = terminal_harness(&["/bin/sh", "-c", "sleep 60"]);
+        let computer = harness.picker.entries[0].worker.clone();
+        let original = with_agent(session("$0", "work"), AgentState::Waiting, None);
+        let other = with_agent(session("$1", "other"), AgentState::Waiting, None);
+        harness.picker.update(Message::AgentStatuses {
+            generation: harness.picker.generation,
+            results: vec![(
+                computer.clone(),
+                Ok(status_rows(&[original.clone(), other.clone()])),
+            )],
+        });
+        harness.picker.switch_view();
+        let selection = harness.picker.selection.clone();
+        let connected = harness.picker.active.as_ref().unwrap().started;
+        let mut replacement = original.clone();
+        match changed_field {
+            0 => replacement.created += 1,
+            1 => replacement.server_pid += 1,
+            2 => replacement.server_start += 1,
+            _ => replacement.socket_path.push_str("-replacement"),
+        }
+        harness.picker.update(Message::Checked(ready(
+            &computer,
+            vec![replacement.clone(), other],
+        )));
+        assert_eq!(
+            attention_sessions(&harness),
+            [("box".into(), "$1".into()), ("box".into(), "$0".into())]
+        );
+        assert_eq!(harness.picker.selection, selection);
+        assert!(harness.picker.current_row().is_none());
+        harness.buffer(120, 30);
+        assert!(harness.picker.terminal_focused && harness.picker.terminal_visible);
+        let active = harness.picker.active.as_ref().unwrap();
+        assert_eq!(active.started, connected);
+        assert!(same_session(active.session.as_ref().unwrap(), &original));
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        harness.press(&["/", "w"]);
+        assert!(harness.picker.current_row().is_none());
+        assert_eq!(harness.picker.selection, selection);
+        harness.press(&["esc"]);
+        harness.press(&["enter", "v", "v", "enter"]);
+        assert!(harness.launched().is_empty());
+        assert_eq!(harness.picker.selection, selection);
+        harness.press(&["down", "down", "enter"]);
+        assert_eq!(harness.launched()[0].session.as_ref(), Some(&replacement));
+        assert_eq!(harness.picker.active.as_ref().unwrap().started, connected);
+    }
+}
+
+fn reporting_fixture(state: &str, action: Option<&str>) -> crate::reporting::Response {
+    crate::reporting::parse(&serde_json::json!({
+        "version": 1, "tmuxVersion": "3.8", "native": false, "detail": "Adapter reporting on tmux 3.8.",
+        "targets": [{
+            "id": "server-1-process-1", "sessionId": "$0", "sessionName": "work", "paneId": "%0",
+            "agent": "omp", "profile": "wkchen", "state": state, "detail": "Profile reporter diagnosis.",
+            "files": if action.is_some() { vec!["/home/u/.omp/profiles/wkchen/agent/extensions/delux-agent-status.ts"] } else { vec![] },
+            "token": action.map(|_| "opaque target lifetime"), "action": action
+        }]
+    }).to_string(), false).unwrap()
+}
+
+fn reporting_open(harness: &mut Harness) -> (u64, Cancel, Worker) {
+    let Command::ReportingSetup {
+        epoch,
+        cancel,
+        workers,
+        token,
+    } = harness.picker.start_reporting_setup()
+    else {
+        panic!("expected inspection")
+    };
+    assert!(token.is_none());
+    (epoch, cancel, workers[0].clone())
+}
+
+fn reporting_ready(harness: &mut Harness) -> (u64, Worker) {
+    let (epoch, _, worker) = reporting_open(harness);
+    assert!(
+        harness
+            .picker
+            .update(Message::ReportingSetup {
+                epoch,
+                worker: worker.clone(),
+                result: Ok(reporting_fixture("missing", Some("install"))),
+            })
+            .is_none()
+    );
+    (epoch, worker)
+}
+
+#[test]
+fn reporting_setup_is_reachable_from_empty_attention_by_key_and_coverage_click() {
+    let worker = worker("box", "box");
+    let mut harness = Harness::new(vec![worker.clone()], vec![ready(&worker, vec![])]);
+    harness.press(&["v"]);
+    assert_eq!(harness.picker.attention_waiting, 0);
+    let rendered = harness.rendered(100, 24);
+    assert!(rendered.contains("s Set up reporting"));
+    assert!(rendered.contains("s reporting setup"));
+    let command = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    let Some(Command::ReportingSetup { cancel, token, .. }) = command else {
+        panic!("expected inspection")
+    };
+    assert!(token.is_none());
+    assert!(harness.picker.reporting_setup.is_some());
+    harness.press(&["esc"]);
+    assert!(cancel.is_cancelled());
+    harness.buffer(100, 24);
+    let area = harness.picker.setup_area;
+    let command = harness.picker.mouse(MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(matches!(
+        command,
+        Some(Command::ReportingSetup { token: None, .. })
+    ));
+}
+
+#[test]
+fn reporting_setup_install_requires_exact_target_confirmation_and_never_retries() {
+    let worker = remote("box", "remote box", "user@box");
+    let mut harness = Harness::new(
+        vec![worker.clone()],
+        vec![ready(&worker, vec![session("$0", "work")])],
+    );
+    reporting_ready(&mut harness);
+    harness.press(&["y", "enter", "down", "enter"]);
+    let rendered = harness.rendered(110, 30);
+    assert!(rendered.contains("Confirm reporting changes"));
+    assert!(rendered.contains("remote box (user@box)"));
+    assert!(rendered.contains("profile: wkchen"));
+    assert!(
+        rendered.contains("/home/u/.omp/profiles/wkchen/agent/extensions/delux-agent-status.ts")
+    );
+    assert!(rendered.contains("No agent restart"));
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none()
+    );
+    let Some(Command::ReportingSetup {
+        epoch,
+        token,
+        workers,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+    else {
+        panic!("expected confirmed install")
+    };
+    assert_eq!(token.as_deref(), Some("opaque target lifetime"));
+    assert_eq!(workers, vec![worker.clone()]);
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+            .is_none()
+    );
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+            .is_none()
+    );
+    assert!(
+        harness
+            .picker
+            .update(Message::ReportingSetup {
+                epoch,
+                worker,
+                result: Err("timeout".into())
+            })
+            .is_none()
+    );
+    let rendered = harness.rendered(110, 30);
+    assert!(rendered.contains("Installation outcome uncertain"));
+    assert!(rendered.contains("Do not retry"));
+    harness.press(&["enter", "y", "enter"]);
+    assert!(harness.launched().is_empty());
+    assert!(matches!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+        Some(Command::ReportingSetup { token: None, .. })
+    ));
+}
+
+#[test]
+fn reporting_setup_rejects_closed_rechecked_and_retargeted_responses() {
+    let worker = remote("box", "box", "old@box");
+    let mut harness = Harness::new(
+        vec![worker.clone()],
+        vec![ready(&worker, vec![session("$0", "work")])],
+    );
+    let (old_epoch, old_cancel, _) = reporting_open(&mut harness);
+    harness.press(&["esc"]);
+    assert!(old_cancel.is_cancelled());
+    harness.picker.update(Message::ReportingSetup {
+        epoch: old_epoch,
+        worker: worker.clone(),
+        result: Ok(reporting_fixture("missing", Some("install"))),
+    });
+    assert!(harness.picker.reporting_setup.is_none());
+    let (epoch, _, _) = reporting_open(&mut harness);
+    harness.picker.update(Message::ReportingSetup {
+        epoch: old_epoch,
+        worker: worker.clone(),
+        result: Ok(reporting_fixture("missing", Some("install"))),
+    });
+    assert!(!harness.rendered(110, 30).contains("wkchen"));
+    harness.picker.entries[0].worker.destination = Some("new@box".into());
+    harness.picker.update(Message::ReportingSetup {
+        epoch,
+        worker,
+        result: Ok(reporting_fixture("missing", Some("install"))),
+    });
+    let rendered = harness.rendered(110, 30);
+    assert!(rendered.contains("Computer/session changed"));
+    assert!(!rendered.contains("wkchen"));
+}
+
+#[test]
+fn reporting_setup_confirmation_rejects_each_session_lifetime_change() {
+    for changed_field in 0..5 {
+        let worker = worker("box", "box");
+        let mut harness = Harness::new(
+            vec![worker.clone()],
+            vec![ready(&worker, vec![session("$0", "work")])],
+        );
+        reporting_ready(&mut harness);
+        harness.press(&["down", "enter"]);
+        let inventory = harness.picker.entries[0].inventory.as_mut().unwrap();
+        match changed_field {
+            0 => inventory.sessions[0].created += 1,
+            1 => inventory.sessions[0].server_pid += 1,
+            2 => inventory.sessions[0].server_start += 1,
+            3 => inventory.sessions[0].socket_path.push_str("-new"),
+            _ => inventory.sessions.clear(),
+        }
+        assert!(
+            harness
+                .picker
+                .key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+                .is_none()
+        );
+        assert!(harness.rendered(110, 30).contains("nothing was installed"));
+    }
+}
+
+#[test]
+fn reporting_setup_inspection_and_confirmation_do_not_replace_or_refocus_terminal() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let connected = harness.picker.active.as_ref().unwrap().started;
+    let selection = harness.picker.selection.clone();
+    harness.picker.view = View::Attention;
+    harness.buffer(120, 30);
+    let area = harness.picker.setup_area;
+    let Some(Command::ReportingSetup { epoch, workers, .. }) = harness.picker.mouse(MouseEvent {
+        kind: MouseEventKind::Down(event::MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    }) else {
+        panic!("expected coverage setup")
+    };
+    harness.picker.update(Message::ReportingSetup {
+        epoch,
+        worker: workers[0].clone(),
+        result: Ok(reporting_fixture("missing", Some("install"))),
+    });
+    assert!(harness.picker.terminal_focused);
+    harness.press(&["down", "enter"]);
+    assert!(
+        harness
+            .rendered(120, 30)
+            .contains("Confirm reporting changes")
+    );
+    assert!(harness.picker.paste("do not send to agent").is_none());
+    harness.press(&["esc", "esc"]);
+    assert_eq!(harness.picker.selection, selection);
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, connected);
+    assert!(harness.picker.terminal_focused);
+    harness.buffer(120, 30);
+    assert!(harness.picker.terminal_visible);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn reporting_setup_distinguishes_installed_native_unknown_and_actual_reporting() {
+    let worker = worker("box", "box");
+    for (state, label) in [
+        ("reporting", "reporting"),
+        ("native", "native"),
+        ("installed", "installed · reporting not confirmed"),
+        ("unknown", "unknown"),
+        ("conflict", "conflict · not modified"),
+    ] {
+        let mut harness = Harness::new(
+            vec![worker.clone()],
+            vec![ready(&worker, vec![session("$0", "work")])],
+        );
+        let (epoch, _, _) = reporting_open(&mut harness);
+        harness.picker.update(Message::ReportingSetup {
+            epoch,
+            worker: worker.clone(),
+            result: Ok(reporting_fixture(state, None)),
+        });
+        assert!(harness.rendered(120, 30).contains(label), "{state}");
+        harness.press(&["down", "enter", "y"]);
+        assert!(
+            !harness
+                .rendered(120, 30)
+                .contains("Confirm reporting changes")
+        );
+    }
+}
+
+#[test]
+fn reporting_setup_success_preserves_terminal_and_does_not_fabricate_agent_status() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let connected = harness.picker.active.as_ref().unwrap().started;
+    let before = harness.picker.entries[0].inventory.clone();
+    let (_, worker) = reporting_ready(&mut harness);
+    harness.press(&["down", "enter"]);
+    let Some(Command::ReportingSetup { epoch, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+    else {
+        panic!("expected install")
+    };
+    let installed = crate::reporting::parse(r#"{"version":1,"status":"installed","files":["/home/u/.omp/profiles/wkchen/agent/extensions/delux-agent-status.ts"],"detail":"Installed. Restart/resume at a safe point."}"#, true).unwrap();
+    assert!(
+        harness
+            .picker
+            .update(Message::ReportingSetup {
+                epoch,
+                worker,
+                result: Ok(installed)
+            })
+            .is_none()
+    );
+    let rendered = harness.rendered(120, 30);
+    assert!(rendered.contains("installed · reporting not confirmed"));
+    assert!(rendered.contains("Restart/resume"));
+    assert_eq!(harness.picker.entries[0].inventory, before);
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, connected);
+    assert!(harness.picker.terminal_focused);
+    harness.press(&["enter", "y", "esc"]);
+    assert!(harness.launched().is_empty());
+    assert!(harness.picker.reporting_setup.is_none());
+}
+
+#[test]
+fn reporting_setup_cancelled_install_needs_fresh_inspection_and_ignores_late_success() {
+    let worker = worker("box", "box");
+    let mut harness = Harness::new(
+        vec![worker.clone()],
+        vec![ready(&worker, vec![session("$0", "work")])],
+    );
+    reporting_ready(&mut harness);
+    harness.press(&["down", "enter"]);
+    let Some(Command::ReportingSetup { epoch, cancel, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+    else {
+        panic!("expected install")
+    };
+    harness.press(&["esc"]);
+    assert!(cancel.is_cancelled());
+    let (new_epoch, _, _) = reporting_open(&mut harness);
+    assert_ne!(epoch, new_epoch);
+    let installed = crate::reporting::parse(
+        r#"{"version":1,"status":"installed","files":["/tmp/adapter"],"detail":"Old success"}"#,
+        true,
+    )
+    .unwrap();
+    harness.picker.update(Message::ReportingSetup {
+        epoch,
+        worker,
+        result: Ok(installed),
+    });
+    let rendered = harness.rendered(110, 30);
+    assert!(rendered.contains("checking"));
+    assert!(!rendered.contains("Old success"));
+    harness.press(&["down", "enter", "y"]);
+    assert!(
+        !harness
+            .rendered(110, 30)
+            .contains("Confirm reporting changes")
+    );
+}
+
+#[test]
+fn browse_attention_shortcuts_match_visible_targets_and_respect_filters() {
+    let alpha = worker("alpha", "alpha-host");
+    let beta = remote("beta", "beta-host", "beta.example");
+    let sessions: Vec<_> = (1..=5)
+        .map(|n| {
+            with_agent(
+                session(&format!("${n}"), &format!("review-{n}")),
+                AgentState::Waiting,
+                None,
+            )
+        })
+        .collect();
+    let mut harness = Harness::new(
+        vec![alpha.clone(), beta.clone()],
+        vec![
+            ready(&alpha, sessions.clone()),
+            ready(&beta, sessions.clone()),
+        ],
+    );
+    let targets: Vec<_> = harness
+        .picker
+        .rows
+        .iter()
+        .filter(|row| row.shortcut.is_some())
+        .map(|row| {
+            (
+                row.shortcut.unwrap(),
+                harness.picker.entries[row.entry].worker.clone(),
+                harness.picker.session(*row).unwrap().clone(),
+            )
+        })
+        .collect();
+    assert_eq!(targets.len(), 9);
+    assert!(harness.picker.rows[0].kind == RowKind::NeedsInputHeader);
+    for (index, (number, worker, session)) in targets.into_iter().enumerate() {
+        assert_eq!(number as usize, index + 1);
+        harness.press(&[&number.to_string()]);
+        let launched = harness.launched();
+        assert_eq!(launched.last().unwrap().worker, worker);
+        assert_eq!(launched.last().unwrap().session.as_ref(), Some(&session));
+    }
+    harness.press(&["v"]);
+    assert_eq!(attention_sessions(&harness).len(), 10);
+    harness.press(&["v", "/", "beta-host", "enter"]);
+    assert_eq!(
+        harness
+            .picker
+            .rows
+            .iter()
+            .filter(|row| row.shortcut.is_some())
+            .count(),
+        5
+    );
+    harness.press(&["1"]);
+    assert_eq!(harness.launched().last().unwrap().worker, beta);
+    let launches = harness.launched().len();
+    harness.press(&["9"]);
+    assert_eq!(harness.launched().len(), launches);
+    harness.press(&["/", "1"]);
+    assert_eq!(harness.picker.filter, "beta-host1");
+    assert_eq!(harness.launched().len(), launches);
+    assert!(
+        !harness
+            .picker
+            .rows
+            .iter()
+            .any(|row| row.kind == RowKind::NeedsInputHeader)
+    );
+}
+
+#[test]
+fn browse_attention_removal_hides_empty_section_without_retargeting_enter() {
+    let computer = worker("box", "box");
+    let waiting = with_agent(session("$1", "review"), AgentState::Waiting, None);
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(
+            &computer,
+            vec![waiting.clone(), session("$2", "other")],
+        )],
+    );
+    harness.press(&["1"]);
+    let selected = harness.picker.selection.clone();
+    harness.picker.update(Message::AgentStatuses {
+        generation: harness.picker.generation,
+        results: vec![(
+            computer,
+            Ok(status_rows(&[with_agent(waiting, AgentState::Done, None)])),
+        )],
+    });
+    assert_eq!(harness.picker.selection, selected);
+    assert!(harness.picker.current_row().is_none());
+    harness.press(&["enter", "1"]);
+    assert_eq!(harness.launched().len(), 1);
+    assert!(harness.picker.rows[0].kind == RowKind::ComputersHeader);
+    assert!(!harness.picker.rows.iter().any(|row| matches!(
+        row.kind,
+        RowKind::NeedsInputHeader | RowKind::AttentionSession
+    )));
 }

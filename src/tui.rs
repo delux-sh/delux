@@ -20,10 +20,12 @@ use crate::theme::Tint;
 use crate::tmux::{AgentState, AgentStatusRow, NewSession, Session};
 use crate::workers::Worker;
 
+mod attention;
 mod confirmation;
 mod drawing;
 mod input;
 mod layout;
+mod reporting_setup;
 mod runtime;
 
 pub use runtime::run_picker;
@@ -31,6 +33,7 @@ pub use runtime::run_picker;
 #[cfg(test)]
 mod tests;
 
+use attention::View;
 use confirmation::EndConfirmation;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -55,6 +58,11 @@ type SaveMapping = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
 type UpdateState = Box<dyn FnMut(StateChange<'_>) -> Result<State, String>>;
 
 type ResolveUser = Arc<dyn Fn(&Cancel, &str) -> Result<String, String> + Send + Sync>;
+type ReportingSetup = Arc<
+    dyn Fn(&Cancel, &Worker, Option<&str>) -> Result<crate::reporting::Response, String>
+        + Send
+        + Sync,
+>;
 
 /// Discovery, access checks and persistence, injected for model tests.
 struct Services {
@@ -62,6 +70,7 @@ struct Services {
     scan: Scan,
     preview: Preview,
     agent_status: AgentStatuses,
+    reporting_setup: ReportingSetup,
     resolve_user: ResolveUser,
     sharing_active: Box<dyn Fn(&str) -> bool>,
     save_mapping: SaveMapping,
@@ -83,6 +92,11 @@ enum RowKind {
     Group,
     Session,
     Computer,
+    AttentionSession,
+    ErrorsHeader,
+    AttentionEmpty,
+    CoverageHeader,
+    NeedsInputHeader,
 }
 
 #[derive(Clone, Copy)]
@@ -90,6 +104,7 @@ struct Row {
     kind: RowKind,
     entry: usize,
     session: usize,
+    shortcut: Option<u8>,
 }
 
 impl Row {
@@ -98,6 +113,7 @@ impl Row {
             kind,
             entry,
             session,
+            shortcut: None,
         }
     }
 }
@@ -108,6 +124,7 @@ enum Selection {
     #[default]
     None,
     Computer(String),
+    Attention(attention::Identity),
     Session {
         worker: String,
         session: String,
@@ -251,6 +268,11 @@ impl Drop for UserInput {
 }
 
 enum Message {
+    ReportingSetup {
+        epoch: u64,
+        worker: Worker,
+        result: Result<crate::reporting::Response, String>,
+    },
     SshUser {
         worker: Worker,
         cancel: Cancel,
@@ -294,6 +316,12 @@ enum Message {
 }
 
 enum Command {
+    ReportingSetup {
+        epoch: u64,
+        cancel: Cancel,
+        workers: Vec<Worker>,
+        token: Option<String>,
+    },
     ResolveUser {
         worker: Worker,
         cancel: Cancel,
@@ -346,6 +374,19 @@ struct Picker {
     notice: String,
     show_scroll_hint: bool,
     filter: String,
+    view: View,
+    other_selection: Selection,
+    other_filter: String,
+    attention_order: Vec<attention::Identity>,
+    errors_expanded: bool,
+    attention_waiting: usize,
+    checks_expanded: bool,
+    status_errors: HashMap<String, String>,
+    status_pending: HashSet<String>,
+    view_area: Rect,
+    setup_area: Rect,
+    setup_epoch: u64,
+    reporting_setup: Option<reporting_setup::Setup>,
     filtering: bool,
     input: Option<UserInput>,
     creation: Option<SessionForm>,
@@ -406,6 +447,19 @@ impl Picker {
             notice: String::new(),
             show_scroll_hint: false,
             filter: String::new(),
+            view: View::Browse,
+            other_selection: Selection::None,
+            other_filter: String::new(),
+            attention_order: Vec::new(),
+            errors_expanded: false,
+            attention_waiting: 0,
+            checks_expanded: false,
+            status_errors: HashMap::new(),
+            status_pending: HashSet::new(),
+            view_area: Rect::default(),
+            setup_area: Rect::default(),
+            setup_epoch: 0,
+            reporting_setup: None,
             filtering: false,
             input: None,
             creation: None,
@@ -454,6 +508,8 @@ impl Picker {
         let cancel = self.cancel.child();
         self.scan_cancel = Some(cancel.clone());
         self.generation += 1;
+        self.status_pending.clear();
+        self.status_inflight = None;
         self.scanning = true;
         self.reorder_on_scan = reorder;
         Command::Discover {
@@ -469,6 +525,13 @@ impl Picker {
 
     fn update(&mut self, message: Message) -> Option<Command> {
         match message {
+            Message::ReportingSetup {
+                epoch,
+                worker,
+                result,
+            } => {
+                self.reporting_result(epoch, worker, result);
+            }
             Message::SshUser {
                 worker,
                 cancel,
@@ -523,6 +586,7 @@ impl Picker {
                         return false;
                     };
                     if entry.worker.destination != worker.destination {
+                        self.status_errors.remove(&entry.worker.key);
                         entry.inventory = None;
                     }
                     entry.worker = worker.clone();
@@ -538,6 +602,9 @@ impl Picker {
                         }),
                 );
                 if let Some(destination) = self.select_added.take() {
+                    if self.view == View::Attention {
+                        self.switch_view();
+                    }
                     if let Some(entry) = self.entries.iter().find(|entry| {
                         entry.worker.destination.as_deref() == Some(destination.as_str())
                     }) {
@@ -571,9 +638,20 @@ impl Picker {
                     return None;
                 }
                 let Some(inventory) = inventory else {
+                    for entry in &mut self.entries {
+                        if self.pending.contains(&entry.worker.key) {
+                            entry.inventory = Some(Inventory {
+                                worker: entry.worker.clone(),
+                                sessions: Vec::new(),
+                                status: Status::ProbeFailed,
+                                detail: "No inventory received from the completed check.".into(),
+                            });
+                        }
+                    }
                     self.scanning = false;
                     self.reorder_on_scan = false;
                     self.pending.clear();
+                    self.rebuild();
                     return None;
                 };
                 if self.pending.remove(&inventory.worker.key)
@@ -582,6 +660,7 @@ impl Picker {
                             && entry.worker.destination == inventory.worker.destination
                     })
                 {
+                    self.status_errors.remove(&entry.worker.key);
                     entry.update_inventory(inventory, self.reorder_on_scan);
                 }
                 if self.reorder_on_scan {
@@ -600,7 +679,7 @@ impl Picker {
                     return None;
                 }
                 for (worker, result) in results {
-                    let Ok(rows) = result else { continue };
+                    self.status_pending.remove(&worker.key);
                     let Some(inventory) = self
                         .entries
                         .iter_mut()
@@ -613,18 +692,32 @@ impl Picker {
                     else {
                         continue;
                     };
-                    for row in rows {
-                        if let Some(session) = inventory.sessions.iter_mut().find(|session| {
+                    let rows = match result {
+                        Ok(rows) => {
+                            self.status_errors.remove(&worker.key);
+                            rows
+                        }
+                        Err(error) => {
+                            self.status_errors.insert(worker.key, error);
+                            for session in &mut inventory.sessions {
+                                session.agent = None;
+                            }
+                            continue;
+                        }
+                    };
+                    for session in &mut inventory.sessions {
+                        let row = rows.iter().find(|row| {
                             session.id == row.session_id
                                 && session.server_pid == row.server_pid
                                 && session.server_start == row.server_start
-                        }) {
-                            session.agent = row.agent;
-                            // Unselected sessions do not receive preview output updates.
+                        });
+                        session.agent = row.and_then(|row| row.agent);
+                        if let Some(row) = row {
                             session.output = session.output.max(row.output);
                         }
                     }
                 }
+                self.rebuild();
             }
             Message::Preview {
                 generation,
@@ -847,6 +940,7 @@ impl Picker {
                     entry.worker.key == worker
                         && entry.worker.destination == inventory.worker.destination
                 }) {
+                    self.status_errors.remove(&worker);
                     entry.update_inventory(inventory, false);
                 }
                 // Do not steal selection from someone browsing during sign-in.
@@ -869,6 +963,9 @@ impl Picker {
 
     /// Selects a newly available session in its computer's expanded group.
     fn show_session(&mut self, worker: &str, session: &str) {
+        if self.view == View::Attention {
+            self.switch_view();
+        }
         self.selection = Selection::Session {
             worker: worker.to_owned(),
             session: session.to_owned(),
@@ -894,7 +991,8 @@ impl Picker {
         if self.quit
             || self.scanning
             || self.status_inflight.is_some()
-            || now.saturating_duration_since(refreshed) < STATUS_REFRESH
+            || (now.saturating_duration_since(refreshed) < STATUS_REFRESH
+                && self.status_pending.is_empty())
         {
             return None;
         }
@@ -903,12 +1001,8 @@ impl Picker {
             .entries
             .iter()
             .filter(|entry| {
-                !entry.sessions().is_empty()
-                    && entry
-                        .worker
-                        .destination
-                        .as_deref()
-                        .is_none_or(|destination| (self.services.sharing_active)(destination))
+                entry.status() == Status::Ready
+                    && (self.view == View::Attention || !entry.sessions().is_empty())
             })
             .map(|entry| entry.worker.clone())
             .collect();
@@ -916,6 +1010,7 @@ impl Picker {
             return None;
         }
         self.status_inflight = Some(self.generation);
+        self.status_pending = workers.iter().map(|worker| worker.key.clone()).collect();
         Some(Command::AgentStatuses {
             generation: self.generation,
             cancel: self.cancel.child(),
@@ -1033,12 +1128,15 @@ impl Picker {
     fn selectable(row: Row) -> bool {
         matches!(
             row.kind,
-            RowKind::Session | RowKind::Pinned | RowKind::Computer
+            RowKind::Session | RowKind::Pinned | RowKind::AttentionSession | RowKind::Computer
         )
     }
 
     fn session(&self, row: Row) -> Option<&Session> {
-        if !matches!(row.kind, RowKind::Session | RowKind::Pinned) {
+        if !matches!(
+            row.kind,
+            RowKind::Session | RowKind::Pinned | RowKind::AttentionSession
+        ) {
             return None;
         }
         self.entries[row.entry].sessions().get(row.session)
@@ -1053,6 +1151,7 @@ impl Picker {
     fn shows_terminal(&self) -> bool {
         self.active.as_ref().is_some_and(|active| {
             self.terminal_focused
+                || self.current_row().is_none()
                 || self.current_row().is_some_and(|row| {
                     active.matches(&self.entries[row.entry].worker, self.session(row))
                 })
@@ -1069,22 +1168,28 @@ impl Picker {
         if choices.is_empty() {
             return;
         }
-        let position = choices
-            .iter()
-            .position(|i| Some(*i) == self.cursor)
-            .unwrap_or(0);
-        let position = (position as isize + delta).clamp(0, choices.len() as isize - 1) as usize;
+        let position = choices.iter().position(|i| Some(*i) == self.cursor);
+        let position = match position {
+            Some(position) => {
+                (position as isize + delta).clamp(0, choices.len() as isize - 1) as usize
+            }
+            None if delta < 0 => choices.len() - 1,
+            None => 0,
+        };
         self.cursor = Some(choices[position]);
         self.remember();
     }
 
     fn selection_of(&self, row: Row) -> Selection {
-        let worker = self.entries[row.entry].worker.key.clone();
+        let worker = &self.entries[row.entry].worker;
         match row.kind {
-            RowKind::Computer => Selection::Computer(worker),
+            RowKind::Computer => Selection::Computer(worker.key.clone()),
+            RowKind::AttentionSession => self.session(row).map_or(Selection::None, |session| {
+                Selection::Attention(attention::Identity::new(worker, session))
+            }),
             RowKind::Session | RowKind::Pinned => match self.session(row) {
                 Some(session) => Selection::Session {
-                    worker,
+                    worker: worker.key.clone(),
                     session: session.id.clone(),
                     pinned: row.kind == RowKind::Pinned,
                 },
@@ -1112,11 +1217,17 @@ impl Picker {
     }
 
     fn rebuild(&mut self) {
+        self.update_attention_order();
+        if self.view == View::Attention {
+            self.rebuild_attention();
+            return;
+        }
         let query = caseless::default_case_fold_str(&self.filter);
         let matches = |text: &str| caseless::default_case_fold_str(text).contains(&query);
         let previous = self.cursor;
         self.rows.clear();
         self.cursor = None;
+        self.append_attention_rows(AgentState::Waiting, &query, 9);
         if query.is_empty() {
             let mut pinned = Vec::new();
             let mut seen = HashSet::new();
@@ -1128,6 +1239,9 @@ impl Picker {
                 }
             }
             if !pinned.is_empty() {
+                if !self.rows.is_empty() {
+                    self.rows.push(Row::new(RowKind::Separator, 0, 0));
+                }
                 self.rows.push(Row::new(RowKind::PinnedHeader, 0, 0));
                 self.rows.extend(pinned);
             }
@@ -1186,11 +1300,18 @@ impl Picker {
                 return;
             }
         }
+        // An inline queue selection carries a session lifetime. Losing that
+        // target must not turn Enter into activation of a different session.
+        if let Selection::Attention(identity) = &self.selection
+            && (!self.filtering || !self.attention_order.contains(identity))
+        {
+            return;
+        }
         // Follow the same computer when sessions arrive or access is lost.
         let replacement = match &self.selection {
             Selection::Computer(worker) => Some((worker, RowKind::Session)),
             Selection::Session { worker, .. } => Some((worker, RowKind::Computer)),
-            Selection::None => None,
+            Selection::None | Selection::Attention(_) => None,
         };
         if let Some((worker, kind)) = replacement
             && let Some(index) = self
@@ -1241,6 +1362,9 @@ impl Picker {
                 worker,
                 session: Some(session),
             }));
+        }
+        if self.status_errors.contains_key(&worker.key) {
+            return Some(self.rescan(false));
         }
         let name = display(&worker.name, 80);
         match entry.status() {

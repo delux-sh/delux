@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, List, ListItem, Padding, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::{Entry, Picker, Row, RowKind, SPINNER, diagnostic_lines, host_part, layout};
+use super::{Entry, Picker, Row, RowKind, SPINNER, View, diagnostic_lines, host_part, layout};
 use crate::app::Status;
 use crate::crt::{self, Effects, Screen, Signal};
 use crate::display::display;
@@ -36,6 +36,14 @@ impl Picker {
         let tint = self.tint;
         self.terminal_visible = false;
         self.list_area = Rect::default();
+        self.view_area = Rect::default();
+        self.setup_area = Rect::default();
+        if let Some(setup) = &mut self.reporting_setup {
+            self.preview_visible = false;
+            self.list_height = 0;
+            setup.render(frame, area, tint);
+            return;
+        }
         if let Some(confirmation) = &mut self.ending {
             self.preview_visible = false;
             self.list_height = 0;
@@ -105,6 +113,37 @@ impl Picker {
         if !self.notice.is_empty() {
             status_lines.push(Line::styled(self.notice.clone(), theme::warning()));
         }
+        let setup_line = (self.view == View::Attention).then_some(status_lines.len());
+        if self.view == View::Attention {
+            let coverage = self.coverage();
+            status_lines.push(Line::styled(
+                "s Set up reporting · inspect computers and reporter files",
+                tint.accent(),
+            ));
+            status_lines.push(Line::styled(
+                format!(
+                    "{} checked · {} checking · {} unavailable{}",
+                    coverage.checked,
+                    coverage.checking,
+                    coverage.unavailable,
+                    if coverage.discovery_incomplete {
+                        " · discovery incomplete"
+                    } else {
+                        ""
+                    },
+                ),
+                theme::muted(),
+            ));
+            if coverage.unreported > 0 {
+                status_lines.push(Line::styled(
+                    format!(
+                        "{} sessions without reported status · r rescan",
+                        coverage.unreported
+                    ),
+                    theme::muted(),
+                ));
+            }
+        }
         let [header, body, status, footer] = layout::chrome(area, status_lines.len());
         let (sessions, computers, setup) = self.counts();
         frame.render_widget(
@@ -112,6 +151,9 @@ impl Picker {
             header,
         );
         frame.render_widget(Paragraph::new(status_lines), status);
+        if let Some(line) = setup_line.filter(|line| *line < usize::from(status.height)) {
+            self.setup_area = Rect::new(status.x, status.y + line as u16, status.width, 1);
+        }
 
         let layout::Panes {
             list: list_area,
@@ -135,14 +177,28 @@ impl Picker {
             } else {
                 tint.border()
             })
-            .title(Line::styled(
-                " Browse ",
-                if sidebar_inactive {
-                    theme::inactive_sidebar()
-                } else {
-                    tint.heading()
-                },
-            ));
+            .title(Line::from(vec![
+                Span::styled(
+                    if self.view == View::Browse {
+                        " Browse "
+                    } else {
+                        " Attention "
+                    },
+                    if sidebar_inactive {
+                        theme::muted()
+                    } else {
+                        tint.selected()
+                    },
+                ),
+                Span::styled(
+                    if self.view == View::Browse {
+                        " v View all attention "
+                    } else {
+                        " v Browse "
+                    },
+                    theme::muted(),
+                ),
+            ]));
         if sidebar_inactive {
             block = block.style(theme::inactive_sidebar());
         } else if let Some(background) = tint.background() {
@@ -161,6 +217,12 @@ impl Picker {
             ))]
         };
         self.list_area = block.inner(list_area);
+        self.view_area = Rect::new(
+            list_area.x + 1,
+            list_area.y,
+            list_area.width.saturating_sub(2).min(42),
+            u16::from(list_area.height > 0),
+        );
         self.list_state.select(self.cursor);
         let list = List::new(items)
             .block(block)
@@ -182,13 +244,17 @@ impl Picker {
                 .take(usize::from(self.list_area.height))
                 .enumerate()
             {
-                if let Some(session) = self.session(*row)
-                    && visible_agent(session, now).is_some()
-                {
-                    let marker = agent_marker(session, now, tint, sidebar_inactive);
-                    frame.buffer_mut()[(marker_x, self.list_area.y + y as u16)]
-                        .set_style(marker.style.remove_modifier(Modifier::REVERSED));
-                }
+                let marker = match row.shortcut {
+                    Some(shortcut) => shortcut_marker(shortcut),
+                    None => match self.session(*row) {
+                        Some(session) if visible_agent(session, now).is_some() => {
+                            agent_marker(session, now, tint, sidebar_inactive)
+                        }
+                        _ => continue,
+                    },
+                };
+                frame.buffer_mut()[(marker_x, self.list_area.y + y as u16)]
+                    .set_style(marker.style.remove_modifier(Modifier::REVERSED));
             }
         }
         if let Some(area) = preview_area {
@@ -377,16 +443,7 @@ impl Picker {
                 theme::muted(),
             ));
         }
-        let waiting = self
-            .entries
-            .iter()
-            .flat_map(Entry::sessions)
-            .filter(|session| {
-                session
-                    .agent
-                    .is_some_and(|agent| agent.state == AgentState::Waiting)
-            })
-            .count();
+        let waiting = self.attention_count(AgentState::Waiting);
         if waiting > 0 {
             spans.push(Span::styled(
                 format!(" · {waiting} waiting"),
@@ -476,22 +533,34 @@ impl Picker {
         };
         let mut spans = Vec::new();
         let mut used = 0;
-        let focus = (self.active.is_some()
-            && !self.terminal_focused
+        let browsing = !self.terminal_focused
             && self.input.is_none()
             && self.creation.is_none()
             && self.add_input.is_none()
-            && !self.filtering)
-            .then_some((
-                "tab",
-                if width < 80 {
-                    "terminal"
-                } else {
-                    "terminal · list focused"
-                },
-            ));
+            && !self.filtering;
+        let focus = (browsing && self.active.is_some()).then_some((
+            "tab",
+            if width < 80 {
+                "terminal"
+            } else {
+                "terminal · list focused"
+            },
+        ));
+        let setup_hint =
+            (browsing && self.view == View::Attention).then_some(("s", "reporting setup"));
+        // Digits only act in normal sidebar mode, so advertise them only there.
+        let shortcut_hint = (browsing && self.rows.iter().any(|row| row.shortcut.is_some()))
+            .then_some(("1–9", "needs input"));
         // Hints are priority ordered. Never leave a partial key or description.
-        for (key, description) in focus.iter().chain(hints.iter()) {
+        // The open/connect action stays ahead of the digit shortcuts on narrow footers.
+        let (primary, rest) = hints.split_at(usize::from(!hints.is_empty()));
+        for (key, description) in setup_hint
+            .iter()
+            .chain(focus.iter())
+            .chain(primary.iter())
+            .chain(shortcut_hint.iter())
+            .chain(rest.iter())
+        {
             let gap = if spans.is_empty() { 1 } else { 2 };
             let needed = gap + key.width() + 1 + description.width();
             if used + needed > usize::from(width) {
@@ -506,6 +575,9 @@ impl Picker {
     }
 
     fn empty_message(&self) -> String {
+        if self.view == View::Attention {
+            return self.attention_empty().into();
+        }
         if !self.filter.is_empty() {
             "Nothing matches the filter.".into()
         } else if self.scanning {
@@ -573,6 +645,17 @@ impl Picker {
 
     fn computer_screen(&self, entry: &Entry) -> Screen {
         let status = entry.status();
+        if let Some(error) = self.status_errors.get(&entry.worker.key) {
+            return Screen {
+                label: format!("{} · status unavailable", entry.worker.name),
+                detail: String::new(),
+                lines: vec![
+                    Line::styled(display(error, 400), theme::error()),
+                    Line::styled("Enter or r to rescan; v for Browse.", theme::muted()),
+                ],
+                signal: Signal::Lost,
+            };
+        }
         let label = format!("{} · {status}", entry.worker.name);
         let mut lines: Vec<Line<'static>> = Vec::new();
         if let Some(destination) = &entry.worker.destination {
@@ -623,9 +706,14 @@ impl Picker {
     }
 
     /// Session details live in the preview; rows use names and short ages.
+    ///
+    /// Session rows lead with two one-character columns: the agent status and
+    /// the pin, each followed by a gap, so names start at offset 4. Attention
+    /// rows lead with the digit shortcut (or the status) and one gap.
     fn render_rows(&self, width: u16, inactive: bool) -> Vec<ListItem<'static>> {
         let content_width = usize::from(width.saturating_sub(4));
-        let name_width = content_width.saturating_sub(9);
+        // Status, pin, their gaps, then the name, two spaces and a 4-wide age.
+        let name_width = content_width.saturating_sub(10);
         let tint = self.tint;
         let (heading, text, secondary) = if inactive {
             let muted = theme::inactive_sidebar();
@@ -641,7 +729,7 @@ impl Picker {
             _ => row.entry,
         };
         // Pinned rows share the room with their computer, taking at most half.
-        let pinned_room = content_width.saturating_sub(11);
+        let pinned_room = content_width.saturating_sub(12);
         let host_width = self
             .rows
             .iter()
@@ -655,10 +743,10 @@ impl Picker {
             .min(pinned_room / 2);
         let pinned_name_width = name_width.min(pinned_room - host_width);
         let name_of = |row: Row| {
-            let width = if row.kind == RowKind::Pinned {
-                pinned_name_width
-            } else {
-                name_width
+            let width = match row.kind {
+                RowKind::Pinned => pinned_name_width,
+                RowKind::Session => name_width,
+                _ => return None,
             };
             self.session(row)
                 .map(|session| fit_name(&session.name, width))
@@ -676,16 +764,45 @@ impl Picker {
             let padding = width.saturating_sub(UnicodeWidthStr::width(name.as_str()));
             format!("{name}{}", " ".repeat(padding))
         };
-        let marker = |session: Option<&Session>| {
-            session.map_or_else(
+        let marker = |row: Row| match row.shortcut {
+            Some(shortcut) => shortcut_marker(shortcut),
+            None => self.session(row).map_or_else(
                 || Span::raw(" "),
                 |session| agent_marker(session, now, tint, inactive),
-            )
+            ),
         };
         self.rows
             .iter()
             .copied()
             .map(|row| {
+                match row.kind {
+                    RowKind::NeedsInputHeader => {
+                        return ListItem::new(Line::styled("Needs input", secondary));
+                    }
+                    RowKind::AttentionEmpty => {
+                        return ListItem::new(Line::styled(self.attention_empty(), secondary));
+                    }
+                    RowKind::ErrorsHeader => {
+                        return ListItem::new(Line::styled(
+                            format!(
+                                "{} Errors ({}) · e toggle",
+                                if self.errors_expanded { "▾" } else { "▸" },
+                                self.attention_count(AgentState::Error)
+                            ),
+                            secondary,
+                        ));
+                    }
+                    RowKind::CoverageHeader => {
+                        return ListItem::new(Line::styled(
+                            format!(
+                                "{} Computer checks · c toggle",
+                                if self.checks_expanded { "▾" } else { "▸" }
+                            ),
+                            secondary,
+                        ));
+                    }
+                    _ => {}
+                }
                 let entry = &self.entries[row.entry];
                 let spans = match row.kind {
                     RowKind::PinnedHeader => vec![Span::styled("Pinned sessions", secondary)],
@@ -694,12 +811,12 @@ impl Picker {
                     RowKind::OtherHeader => vec![Span::styled("Other computers", secondary)],
                     RowKind::Group => vec![Span::styled(
                         fit_name(&entry.worker.name, content_width),
-                        heading,
+                        secondary,
                     )],
                     RowKind::Pinned => {
                         let mut spans = vec![
-                            marker(self.session(row)),
-                            Span::styled("★ ", heading),
+                            marker(row),
+                            Span::styled(" ★ ", heading),
                             Span::styled(padded(row), text),
                         ];
                         let detail = self.session(row).map(|session| {
@@ -716,14 +833,36 @@ impl Picker {
                             self.state.is_pinned(&entry.worker.key, &session.name)
                         });
                         let mut spans = vec![
-                            marker(session),
-                            Span::styled(if pinned { "★ " } else { "  " }, heading),
+                            marker(row),
+                            Span::styled(if pinned { " ★ " } else { "   " }, heading),
                             Span::styled(padded(row), text),
                         ];
                         if let Some(session) = session {
                             spans.push(Span::styled(format!("  {}", details(session)), secondary));
                         }
                         spans
+                    }
+                    RowKind::AttentionSession => {
+                        let session = self.session(row).expect("attention session row");
+                        let name_width = UnicodeWidthStr::width(session.name.as_str())
+                            .min(content_width.saturating_sub(4) / 2);
+                        let host_width = UnicodeWidthStr::width(entry.worker.name.as_str())
+                            .min(content_width.saturating_sub(name_width + 4));
+                        vec![
+                            marker(row),
+                            Span::raw(" "),
+                            Span::styled(
+                                fit_name(
+                                    &session.name,
+                                    content_width.saturating_sub(host_width + 4),
+                                ),
+                                text,
+                            ),
+                            Span::styled(
+                                format!("  {}", fit_name(&entry.worker.name, host_width)),
+                                secondary,
+                            ),
+                        ]
                     }
                     RowKind::Computer => {
                         let status = entry.status();
@@ -735,7 +874,9 @@ impl Picker {
                         } else {
                             "●"
                         };
-                        let status_text = if offline {
+                        let status_text = if self.status_errors.contains_key(&entry.worker.key) {
+                            "status unavailable"
+                        } else if offline {
                             "offline"
                         } else {
                             match status {
@@ -763,6 +904,12 @@ impl Picker {
                             Span::styled(format!("  {dot} "), style),
                             Span::styled(status_text, style),
                         ]
+                    }
+                    RowKind::AttentionEmpty
+                    | RowKind::ErrorsHeader
+                    | RowKind::CoverageHeader
+                    | RowKind::NeedsInputHeader => {
+                        unreachable!("attention headings are rendered before computer lookup")
                     }
                 };
                 ListItem::new(Line::from(spans))
@@ -800,10 +947,11 @@ fn visible_agent(session: &Session, now: i64) -> Option<AgentStatus> {
     })
 }
 
+/// Status column: `?` waiting, `●` working, `✓` done, `✗` error.
 fn agent_marker(session: &Session, now: i64, tint: theme::Tint, inactive: bool) -> Span<'static> {
     let state = visible_agent(session, now).map(|agent| agent.state);
     let style = match state {
-        Some(AgentState::Waiting) => theme::warning().add_modifier(Modifier::BOLD),
+        Some(AgentState::Waiting) => attention_style(),
         Some(AgentState::Error) => theme::error().remove_modifier(Modifier::BOLD | Modifier::DIM),
         _ if inactive => theme::inactive_sidebar().remove_modifier(Modifier::BOLD | Modifier::DIM),
         Some(AgentState::Working) => tint.secondary().remove_modifier(Modifier::BOLD),
@@ -812,13 +960,28 @@ fn agent_marker(session: &Session, now: i64, tint: theme::Tint, inactive: bool) 
     };
     Span::styled(
         match state {
-            Some(AgentState::Working | AgentState::Waiting) => "●",
+            Some(AgentState::Waiting) => "?",
+            Some(AgentState::Working) => "●",
             Some(AgentState::Done) => "✓",
             Some(AgentState::Error) => "✗",
             None => " ",
         },
         style,
     )
+}
+
+/// The digit that opens a needs-input session, in the waiting colour so the
+/// number reads as the row's status rather than a separate column.
+fn shortcut_marker(shortcut: u8) -> Span<'static> {
+    Span::styled(
+        ["1", "2", "3", "4", "5", "6", "7", "8", "9"][usize::from(shortcut - 1)],
+        attention_style(),
+    )
+}
+
+/// Waiting sessions and their shortcuts stay bright even when the sidebar is inactive.
+fn attention_style() -> Style {
+    theme::warning().add_modifier(Modifier::BOLD)
 }
 
 /// The active pane's command, its directory, activity age, windows and clients.

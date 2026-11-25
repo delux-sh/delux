@@ -36,6 +36,7 @@ struct ComputerState: Equatable {
     var sessions: [RemoteSession] = []
     var lastRefresh: Date?
     var isRefreshing = false
+    var connectedAddress: SSHAddress?
 
     var hasLoadedOnce: Bool { lastRefresh != nil }
 }
@@ -115,9 +116,17 @@ struct ComputerStore {
 @MainActor
 @Observable
 final class AppModel {
-    private(set) var computers: [Computer] = []
-    private(set) var states: [UUID: ComputerState] = [:]
-    private(set) var isOnline = true
+    private(set) var computers: [Computer] = [] {
+        didSet { updateAttention() }
+    }
+    private(set) var states: [UUID: ComputerState] = [:] {
+        didSet { updateAttention() }
+    }
+    private(set) var isOnline = true {
+        didSet { updateAttention() }
+    }
+    private(set) var attention = AttentionInbox()
+    let reportingSetup = ReportingSetupModel()
     private(set) var terminal: TerminalSessionController?
     /// Set when the saved configuration is unreadable; every mutation is refused until it clears.
     private(set) var storageError: StorageError?
@@ -153,6 +162,7 @@ final class AppModel {
             states[computer.id] = ComputerState()
             computerRevisions[computer.id] = UUID()
         }
+        updateAttention()
         monitor.pathUpdateHandler = { [weak self] path in
             let online = path.status == .satisfied
             Task { @MainActor in self?.networkChanged(online: online) }
@@ -170,10 +180,10 @@ final class AppModel {
         states[id] ?? ComputerState()
     }
 
-    var waitingCount: Int {
-        states.values.reduce(0) { total, state in
-            total + state.sessions.filter { $0.status == .waiting }.count
-        }
+    var waitingCount: Int { attention.waiting.count }
+
+    private func updateAttention() {
+        attention.update(computers: computers, states: states, isOnline: isOnline)
     }
 
     // MARK: - Computers
@@ -198,6 +208,7 @@ final class AppModel {
         renamed.name = computer.name
         guard renamed != computer || credentialsChanged else { return }
         computerRevisions[computer.id] = UUID()
+        reportingSetup.invalidate(computer.id, reason: "The computer configuration changed.")
         interruptEndingSession(on: computer.id, reason: "The computer configuration changed during the request.")
         invalidate(computer.id)
         states[computer.id] = ComputerState()
@@ -212,6 +223,7 @@ final class AppModel {
         guard computers.contains(where: { $0.id == id }) else { return }
         try persist(computers.filter { $0.id != id })
         computerRevisions[id] = nil
+        reportingSetup.invalidate(id, reason: "The computer was removed.")
         interruptEndingSession(on: id, reason: "The computer was removed during the request.")
         if terminal?.route.computerID == id {
             path.removeAll()
@@ -251,6 +263,7 @@ final class AppModel {
               computer.hostKeyFingerprint == nil,
               computer.hostname == prompt.computer.hostname,
               computer.port == prompt.computer.port,
+              computer.lanAddress == prompt.computer.lanAddress,
               computer.username == prompt.computer.username else {
             hostKeyPrompt = nil
             refresh(prompt.computer.id)
@@ -317,8 +330,10 @@ final class AppModel {
             result.sessions = sessions.sorted(by: StatusStyle.order)
             result.phase = .loaded
             result.lastRefresh = Date()
+            result.connectedAddress = transport.connectedAddress
         } catch let error as HostKeyError {
             keepTransport = false
+            result.connectedAddress = nil
             switch error {
             case .unknown(let fingerprint):
                 result.phase = .hostKeyUnknown(fingerprint: fingerprint)
@@ -327,6 +342,7 @@ final class AppModel {
             }
         } catch {
             keepTransport = false
+            result.connectedAddress = nil
             if Task.isCancelled || error is CancellationError { return }
             result.phase = .failed(error.localizedDescription)
         }
@@ -487,6 +503,7 @@ final class AppModel {
             startPolling()
         case .background:
             isForeground = false
+            reportingSetup.stop(reason: "The app went into the background.")
             interruptEndingSession(reason: "The app went into the background before confirmation arrived.")
             stopPolling()
             cancelRefreshes()
@@ -505,6 +522,7 @@ final class AppModel {
             terminal?.resume()
             refreshAll()
         } else if !online {
+            reportingSetup.stop(reason: "The network disconnected.")
             interruptEndingSession(reason: "The network disconnected before confirmation arrived.")
             cancelRefreshes()
         }
@@ -540,6 +558,11 @@ final class AppModel {
         }
         for id in Array(transports.keys) {
             dropTransport(id)
+        }
+        // A restored network must obtain a new inventory before old waiting
+        // statuses can count again. Keep the snapshots available in Browse.
+        for computer in computers where states[computer.id]?.phase == .loaded {
+            states[computer.id]?.phase = .idle
         }
     }
 

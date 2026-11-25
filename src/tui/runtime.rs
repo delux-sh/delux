@@ -204,6 +204,34 @@ fn execute_command(
     guard: &TerminalGuard,
 ) -> Result<(), String> {
     match command {
+        Command::ReportingSetup {
+            epoch,
+            cancel,
+            workers,
+            token,
+        } => {
+            let reporting = picker.services.reporting_setup.clone();
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                for worker in workers {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    let result = reporting(&cancel, &worker, token.as_deref());
+                    if cancel.is_cancelled()
+                        || sender
+                            .send(Message::ReportingSetup {
+                                epoch,
+                                worker,
+                                result,
+                            })
+                            .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
         Command::Discover { generation, cancel } => {
             let discover = picker.services.discover.clone();
             let sender = sender.clone();
@@ -447,6 +475,7 @@ pub fn run_picker(cancel: &Cancel, opts: &Options) -> Result<i32, String> {
         scan: Arc::new(scan),
         preview: Arc::new(preview),
         agent_status: Arc::new(crate::app::agent_status),
+        reporting_setup: Arc::new(crate::app::reporting_setup),
         resolve_user: Arc::new(crate::app::resolve_ssh_user),
         sharing_active: Box::new(crate::ssh_mux::sharing_active),
         save_mapping: Box::new(move |name, destination| {

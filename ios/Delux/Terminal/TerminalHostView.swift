@@ -27,8 +27,9 @@ struct TerminalHostView: UIViewRepresentable {
         controller.attachOutput { [weak view] data in
             view?.feed(byteArray: ArraySlice(data))
         }
-        context.coordinator.observeKeyboard(for: view)
-        return TerminalContainerView(terminal: view)
+        let container = TerminalContainerView(terminal: view)
+        context.coordinator.observeKeyboard(for: container)
+        return container
     }
 
     func updateUIView(_ container: TerminalContainerView, context: Context) {
@@ -90,7 +91,8 @@ struct TerminalHostView: UIViewRepresentable {
         }
 
         /// Keeps the toggle honest when the system shows or hides the keyboard itself (swipe, hardware keyboard).
-        func observeKeyboard(for view: UIView) {
+        func observeKeyboard(for container: TerminalContainerView) {
+            let view = container.terminal
             let center = NotificationCenter.default
             observers = [
                 center.addObserver(forName: UIResponder.keyboardWillShowNotification, object: nil, queue: .main) { [weak self, weak view] _ in
@@ -108,6 +110,14 @@ struct TerminalHostView: UIViewRepresentable {
                     }
                 },
             ]
+            observers += [
+                UIResponder.keyboardWillChangeFrameNotification,
+                UIResponder.keyboardDidChangeFrameNotification,
+            ].map { name in
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak container] notification in
+                    MainActor.assumeIsolated { container?.keyboardChanged(notification) }
+                }
+            }
         }
 
         func stopObserving() {
@@ -140,22 +150,48 @@ struct TerminalHostView: UIViewRepresentable {
     }
 }
 
-/// UIKit owns keyboard avoidance so the terminal grid ends above the accessory
-/// in both software- and hardware-keyboard modes.
+/// UIKit owns keyboard avoidance so the terminal grid ends above the accessory.
+/// Use the reported end frame: the keyboard layout guide under-reported coverage
+/// when the accessory's safe-area inset changed between keyboard modes.
 final class TerminalContainerView: UIView {
     let terminal: DeluxTerminalView
+    private var keyboardFrame: CGRect?
+    private lazy var keyboardBottom = terminal.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor)
 
     init(terminal: DeluxTerminalView) {
         self.terminal = terminal
         super.init(frame: .zero)
+        // The safe area bounds the terminal when the keyboard is absent.
+        let bottom = terminal.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor)
+        bottom.priority = .defaultHigh
         terminal.translatesAutoresizingMaskIntoConstraints = false
         addSubview(terminal)
         NSLayoutConstraint.activate([
             terminal.leadingAnchor.constraint(equalTo: leadingAnchor),
             terminal.trailingAnchor.constraint(equalTo: trailingAnchor),
             terminal.topAnchor.constraint(equalTo: topAnchor),
-            terminal.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor),
+            keyboardBottom,
+            bottom,
         ])
+    }
+
+    func keyboardChanged(_ notification: Notification) {
+        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        keyboardFrame = frame
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+
+    override func layoutSubviews() {
+        if let window, let keyboardFrame {
+            let frame = convert(window.convert(keyboardFrame, from: window.screen.coordinateSpace), from: window)
+            let overlap = bounds.intersection(frame)
+            // Floating keyboards do not reserve the full width of the screen.
+            keyboardBottom.constant = !overlap.isNull && overlap.maxY >= bounds.maxY ? -overlap.height : 0
+        } else {
+            keyboardBottom.constant = 0
+        }
+        super.layoutSubviews()
     }
 
     @available(*, unavailable)

@@ -21,6 +21,8 @@ private struct SSHCommandFailure: LocalizedError {
 final class SSHTransport {
     private let computer: Computer
     private var connection: SSHConnection?
+    private var connecting: SSHConnectionRace?
+    private(set) var connectedAddress: SSHAddress?
     private var terminal: Channel?
     private var outputTask: Task<Void, Never>?
     private var attachment = UUID()
@@ -69,6 +71,17 @@ final class SSHTransport {
         }
     }
 
+    func inspectReporting(assets: ReportingSetupProtocol.Assets) async throws -> ReportingInspection {
+        try ReportingSetupProtocol.inspection(await execute(assets.command()))
+    }
+
+    func installReporting(_ target: ReportingTarget, assets: ReportingSetupProtocol.Assets) async throws -> ReportingInstallReceipt {
+        guard target.canInstall, let token = target.token else {
+            throw SSHTransportError.message("This reporter has no safe installation action. Check again.")
+        }
+        return try ReportingSetupProtocol.receipt(await execute(assets.command(token: token)), expectedFiles: target.files)
+    }
+
     func attach(session: RemoteSession, columns: Int, rows: Int,
                 onOutput: @escaping @MainActor (Data) -> Void,
                 onClose: @escaping @MainActor (String?) -> Void) async throws {
@@ -98,7 +111,8 @@ final class SSHTransport {
         do {
             let connection = try await connected()
             let execution = try await withTaskCancellationHandler {
-                try await connection.open(command: command, size: (dimension(columns), dimension(rows)), events: continuation).get()
+                try Task.checkCancellation()
+                return try await connection.open(command: command, size: (dimension(columns), dimension(rows)), events: continuation).get()
             } onCancel: { connection.closeWithoutWaiting() }
             guard self.connection === connection, attachment == token else {
                 execution.channel.close(promise: nil)
@@ -140,8 +154,12 @@ final class SSHTransport {
         outputTask = nil
         let child = terminal
         let old = connection
+        let pending = connecting
         terminal = nil
         connection = nil
+        connecting = nil
+        connectedAddress = nil
+        pending?.cancel()
         child?.close(promise: nil)
         // Closing SSH only detaches the client. Never send a tmux kill command.
         if let old { try? await old.close().get() }
@@ -151,23 +169,38 @@ final class SSHTransport {
 
     private func connected() async throws -> SSHConnection {
         try Task.checkCancellation()
-        let candidate: SSHConnection
-        if let existing = connection {
-            candidate = existing
+        // Route selection happens only before authentication, never to move a
+        // live terminal or replay a command after a connection has failed.
+        if let connection { return connection }
+        let race: SSHConnectionRace
+        if let pending = connecting {
+            race = pending
         } else {
-            candidate = SSHConnection(computer: computer)
-            connection = candidate
+            race = SSHConnectionRace(computer: computer)
+            connecting = race
         }
         do {
-            try await withTaskCancellationHandler {
-                try await candidate.ready.get()
-            } onCancel: { candidate.closeWithoutWaiting() }
+            let candidate = try await withTaskCancellationHandler {
+                try await race.ready.get()
+            } onCancel: { race.cancel() }
             try Task.checkCancellation()
-            guard connection === candidate else { throw CancellationError() }
+            guard connecting === race || connection === candidate else { throw CancellationError() }
+            if connecting === race {
+                connecting = nil
+                connection = candidate
+                connectedAddress = candidate.address
+                candidate.closedFuture.whenComplete { [weak self, weak candidate] _ in
+                    Task { @MainActor [weak self, weak candidate] in
+                        guard let self, let candidate, self.connection === candidate else { return }
+                        self.connection = nil
+                        self.connectedAddress = nil
+                    }
+                }
+            }
             return candidate
         } catch {
-            candidate.closeWithoutWaiting()
-            if connection === candidate { connection = nil }
+            race.cancel()
+            if connecting === race { connecting = nil }
             throw error
         }
     }
@@ -176,18 +209,23 @@ final class SSHTransport {
         let connection = try await connected()
         do {
             return try await withTaskCancellationHandler {
+                try Task.checkCancellation()
                 let execution = try await connection.open(command: command, size: nil, events: nil).get()
                 return try await connection.bounded(execution.result, seconds: 20).get()
             } onCancel: { connection.closeWithoutWaiting() }
         } catch {
             connection.closeWithoutWaiting()
-            if self.connection === connection { self.connection = nil }
+            if self.connection === connection {
+                self.connection = nil
+                connectedAddress = nil
+            }
             throw error
         }
     }
 
     deinit {
         outputTask?.cancel()
+        connecting?.cancel()
         connection?.closeWithoutWaiting()
     }
 }
@@ -197,36 +235,151 @@ private enum SSHTerminalEvent {
     case closed(String?)
 }
 
-// All mutable connection and handler state lives on this one background NIO loop.
+/// Unknown hosts must complete the canonical route's explicit trust flow first.
+/// Merely advertising or pairing a LAN address never grants it trust.
+struct SSHRoutePlan {
+    let preferred: SSHAddress
+    let fallback: SSHAddress?
+
+    init(computer: Computer) {
+        let canonical = SSHAddress(hostname: computer.hostname, port: computer.port)
+        if computer.hostKeyFingerprint != nil, let lan = computer.lanAddress, lan != canonical {
+            preferred = lan
+            fallback = canonical
+        } else {
+            preferred = canonical
+            fallback = nil
+        }
+    }
+}
+
+// All mutable connection, race and handler state lives on this background loop.
 // The group is process-wide, not recreated for each dashboard refresh.
+private let sshEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
+private final class SSHConnectionRace: @unchecked Sendable {
+    let ready: EventLoopFuture<SSHConnection>
+    private let loop: EventLoop
+    private let result: EventLoopPromise<SSHConnection>
+    private let computer: Computer
+    private let routes: SSHRoutePlan
+    private var preferred: SSHConnection?
+    private var fallback: SSHConnection?
+    private var fallbackTimer: Scheduled<Void>?
+    private var preferredError: Error?
+    private var fallbackError: Error?
+    private var finished = false
+
+    init(computer: Computer) {
+        self.computer = computer
+        routes = SSHRoutePlan(computer: computer)
+        loop = sshEventLoopGroup.next()
+        result = loop.makePromise(of: SSHConnection.self)
+        ready = result.futureResult
+        loop.execute { self.start() }
+    }
+
+    private func start() {
+        guard !finished else { return }
+        if routes.fallback != nil {
+            fallbackTimer = loop.scheduleTask(in: .milliseconds(750)) { self.startFallback() }
+        }
+        let candidate = SSHConnection(computer: computer, address: routes.preferred, loop: loop)
+        preferred = candidate
+        observe(candidate, isPreferred: true)
+    }
+
+    private func startFallback() {
+        guard !finished, fallback == nil, let address = routes.fallback else { return }
+        fallbackTimer?.cancel()
+        fallbackTimer = nil
+        let candidate = SSHConnection(computer: computer, address: address, loop: loop)
+        fallback = candidate
+        observe(candidate, isPreferred: false)
+    }
+
+    private func observe(_ candidate: SSHConnection, isPreferred: Bool) {
+        candidate.ready.whenComplete { outcome in
+            guard !self.finished else { candidate.closeWithoutWaiting(); return }
+            switch outcome {
+            case .success:
+                self.finished = true
+                self.fallbackTimer?.cancel()
+                self.fallbackTimer = nil
+                if self.preferred !== candidate { self.preferred?.closeWithoutWaiting() }
+                if self.fallback !== candidate { self.fallback?.closeWithoutWaiting() }
+                // Only a fully authenticated connection escapes the race. No
+                // candidate receives a session/exec request before this point.
+                self.result.succeed(candidate)
+            case .failure(let error):
+                candidate.closeWithoutWaiting()
+                if isPreferred {
+                    self.preferredError = error
+                    self.startFallback()
+                } else {
+                    self.fallbackError = error
+                }
+                guard let preferredError = self.preferredError,
+                      self.routes.fallback == nil || self.fallbackError != nil else { return }
+                self.finished = true
+                self.fallbackTimer?.cancel()
+                self.fallbackTimer = nil
+                // Do not hide a rejected server key behind another route's
+                // timeout when no authenticated route was available.
+                let failure: Error
+                if preferredError is HostKeyError { failure = preferredError }
+                else { failure = self.fallbackError ?? preferredError }
+                self.result.fail(failure)
+            }
+        }
+    }
+
+    func cancel() {
+        loop.execute {
+            if !self.finished {
+                self.finished = true
+                self.result.fail(CancellationError())
+            }
+            self.fallbackTimer?.cancel()
+            self.fallbackTimer = nil
+            // Settle the race before closing: a synchronous authentication
+            // failure from close must not start a new fallback candidate.
+            // Also close a winner not yet adopted by its suspended caller.
+            self.preferred?.closeWithoutWaiting()
+            self.fallback?.closeWithoutWaiting()
+        }
+    }
+}
+
 private final class SSHConnection: @unchecked Sendable {
-    private static let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     let loop: EventLoop
+    let address: SSHAddress
     let ready: EventLoopFuture<Void>
-    private let authenticated: EventLoopPromise<Void>
+    let closedFuture: EventLoopFuture<Void>
+    private let authentication: SSHAuthenticationHandler
+    private let disconnected: EventLoopPromise<Void>
     private var channel: Channel?
     private var closed = false
 
-    init(computer: Computer) {
-        loop = Self.group.next()
-        authenticated = loop.makePromise(of: Void.self)
+    init(computer: Computer, address: SSHAddress, loop: EventLoop) {
+        self.loop = loop
+        self.address = address
+        let authenticated = loop.makePromise(of: Void.self)
+        authentication = SSHAuthenticationHandler(promise: authenticated)
         ready = authenticated.futureResult
+        disconnected = loop.makePromise(of: Void.self)
+        closedFuture = disconnected.futureResult
         loop.execute { self.start(computer) }
     }
 
-    private var authentication: SSHAuthenticationHandler?
-
     private func start(_ computer: Computer) {
-        guard !closed else { authenticated.fail(CancellationError()); return }
-        guard !computer.hostname.isEmpty, !computer.username.isEmpty, (1...65535).contains(computer.port) else {
-            authenticated.fail(SSHTransportError.message("Enter a hostname, username, and valid SSH port."))
+        guard !closed else { return }
+        guard !address.hostname.isEmpty, !computer.username.isEmpty, (1...65535).contains(address.port) else {
+            authentication.fail(SSHTransportError.message("Enter a hostname, username, and valid SSH port."))
             return
         }
-        let auth: SSHUserAuthentication
-        do { auth = try SSHUserAuthentication(computer: computer) }
-        catch { authenticated.fail(error); return }
-        let authentication = SSHAuthenticationHandler(promise: authenticated)
-        self.authentication = authentication
+        let auth = SSHAuthenticationDelegate(computer: computer)
+        let authentication = self.authentication
         let bootstrap = ClientBootstrap(group: loop)
             .connectTimeout(.seconds(15))
         // Both DNS/TCP establishment and SSH authentication are bounded. The
@@ -236,19 +389,23 @@ private final class SSHConnection: @unchecked Sendable {
             self.closeWithoutWaiting()
         }
         ready.whenComplete { _ in deadline.cancel() }
-        bootstrap.connect(host: computer.hostname, port: computer.port).whenComplete { result in
+        bootstrap.connect(host: address.hostname, port: address.port).whenComplete { result in
             switch result {
             case .success(let channel):
                 guard !self.closed else { channel.close(promise: nil); return }
                 // Happy Eyeballs may initialize several TCP attempts. Only the
                 // winning channel owns SSH authentication and connection state.
                 self.channel = channel
-                channel.closeFuture.whenComplete { _ in authentication.fail(SSHTransportError.message("SSH connection closed.")) }
+                channel.closeFuture.whenComplete { _ in
+                    self.channel = nil
+                    self.closed = true
+                    authentication.fail(SSHTransportError.message("SSH connection closed."))
+                    self.disconnected.succeed(())
+                }
                 do {
                     try channel.pipeline.syncOperations.addHandler(authentication)
                     try channel.pipeline.syncOperations.addHandler(
-                        NIOSSHHandler(role: .client(.init(userAuthDelegate: auth,
-                            serverAuthDelegate: SSHHostAuthentication(expected: computer.hostKeyFingerprint))),
+                        NIOSSHHandler(role: .client(.init(userAuthDelegate: auth, serverAuthDelegate: auth)),
                             allocator: channel.allocator, inboundChildChannelInitializer: nil),
                         position: .first)
                 } catch {
@@ -309,14 +466,17 @@ private final class SSHConnection: @unchecked Sendable {
 
     func close() -> EventLoopFuture<Void> {
         loop.flatSubmit {
+            guard !self.closed else { return self.closedFuture }
             self.closed = true
-            self.authentication?.fail(CancellationError())
-            guard let channel = self.channel else { return self.loop.makeSucceededFuture(()) }
-            self.channel = nil
+            self.authentication.fail(CancellationError())
+            guard let channel = self.channel else {
+                self.disconnected.succeed(())
+                return self.closedFuture
+            }
             // Closing the parent tears down every child, including an opening
             // channel not yet returned to the main actor.
             channel.close(promise: nil)
-            return channel.closeFuture
+            return self.closedFuture
         }
     }
 }
@@ -326,11 +486,17 @@ private struct SSHExecution {
     let result: EventLoopFuture<Data>
 }
 
-private final class SSHHostAuthentication: NIOSSHClientServerAuthenticationDelegate {
-    let expected: String?
-    init(expected: String?) { self.expected = expected }
+// The same delegate owns server validation and credential offers. Credentials
+// are not even loaded from Keychain until the pinned server key has matched.
+final class SSHAuthenticationDelegate: NIOSSHClientServerAuthenticationDelegate, NIOSSHClientUserAuthenticationDelegate {
+    private let computer: Computer
+    private var hostVerified = false
+    private var offered = false
+
+    init(computer: Computer) { self.computer = computer }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
+        hostVerified = false
         // NIOSSH's public OpenSSH serializer encodes the actual SSH key wire
         // blob (algorithm + length-prefixed components), not a debug string.
         let key = String(openSSHPublicKey: hostKey).split(separator: " ")
@@ -339,7 +505,7 @@ private final class SSHHostAuthentication: NIOSSHClientServerAuthenticationDeleg
             return
         }
         let fingerprint = "SHA256:" + Data(SHA256.hash(data: wire)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        guard let expected else {
+        guard let expected = computer.hostKeyFingerprint else {
             validationCompletePromise.fail(HostKeyError.unknown(fingerprint: fingerprint))
             return
         }
@@ -347,36 +513,32 @@ private final class SSHHostAuthentication: NIOSSHClientServerAuthenticationDeleg
             validationCompletePromise.fail(HostKeyError.changed(expected: expected, received: fingerprint))
             return
         }
+        hostVerified = true
         validationCompletePromise.succeed(())
-    }
-}
-
-private final class SSHUserAuthentication: NIOSSHClientUserAuthenticationDelegate {
-    private let username: String
-    private let offer: NIOSSHUserAuthenticationOffer.Offer
-    private let method: NIOSSHAvailableUserAuthenticationMethods
-    private var offered = false
-
-    init(computer: Computer) throws {
-        username = computer.username
-        switch computer.authentication {
-        case .key:
-            offer = .privateKey(.init(privateKey: try CredentialStore.privateKey(for: computer.id)))
-            method = .publicKey
-        case .password:
-            offer = .password(.init(password: try CredentialStore.password(for: computer.id)))
-            method = .password
-        }
     }
 
     func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods,
                                 nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
+        guard hostVerified else {
+            nextChallengePromise.fail(SSHTransportError.message("SSH credentials blocked until the server key is verified."))
+            return
+        }
+        let method: NIOSSHAvailableUserAuthenticationMethods = computer.authentication == .key ? .publicKey : .password
         guard !offered, availableMethods.contains(method) else {
             nextChallengePromise.fail(SSHTransportError.message("SSH authentication failed. Check your username and installed public key or password. Keyboard-interactive and multi-factor authentication are not supported."))
             return
         }
         offered = true
-        nextChallengePromise.succeed(.init(username: username, serviceName: "ssh-connection", offer: offer))
+        do {
+            let offer: NIOSSHUserAuthenticationOffer.Offer
+            switch computer.authentication {
+            case .key: offer = .privateKey(.init(privateKey: try CredentialStore.privateKey(for: computer.id)))
+            case .password: offer = .password(.init(password: try CredentialStore.password(for: computer.id)))
+            }
+            nextChallengePromise.succeed(.init(username: computer.username, serviceName: "ssh-connection", offer: offer))
+        } catch {
+            nextChallengePromise.fail(error)
+        }
     }
 }
 

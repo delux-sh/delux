@@ -26,6 +26,11 @@ final class TerminalSessionController {
     private(set) var computer: Computer
     private(set) var state: State = .connecting
 
+    var isUsingLAN: Bool {
+        state.isConnected && computer.lanAddress != nil &&
+            transport?.connectedAddress == computer.lanAddress
+    }
+
     /// Installed by the terminal view; raw bytes go straight to the emulator.
     @ObservationIgnored private var output: ((Data) -> Void)?
 

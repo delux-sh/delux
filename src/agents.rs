@@ -175,12 +175,8 @@ const AGENTS: &[Agent] = &[
         name: "omp",
         display: "OMP",
         executable: "omp",
-        config_env: Some("PI_CODING_AGENT_DIR"),
-        directory: Directory::HomeVariable {
-            variable: "PI_CONFIG_DIR",
-            default: ".omp",
-            suffix: "agent",
-        },
+        config_env: None,
+        directory: Directory::Omp,
         detect_fallback_parent: true,
         integration: Integration::Extension {
             file: "extensions/delux-agent-status.ts",

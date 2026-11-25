@@ -8,10 +8,16 @@
 
 /* Begin PBXBuildFile section */
 		1EDDDB1D24C441E25913EBDE /* TerminalSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC79CDF60125466FBAF67DA7 /* TerminalSessionController.swift */; };
+		24CCEAEA2015DA9AB5499B69 /* ReportingSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 428AF16F77BBC478A6081C7E /* ReportingSetupTests.swift */; };
+		27D72E2B2CF7645FAAA5069B /* NearbyComputers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FCC0C9D5DED74FE13F8C96A /* NearbyComputers.swift */; };
 		3048ECF91CAC405A6E9921E1 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D98F75830D7E7529BBB68F /* AppModelTests.swift */; };
+		32C5E406F82BE24A2186ED1E /* ReportingSetupProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766BAFD10A0BF5E7B95C2748 /* ReportingSetupProtocol.swift */; };
+		37ABE7C5CA138F83AFCD3E14 /* reporting_setup.py in Resources */ = {isa = PBXBuildFile; fileRef = BB87330B2B8106418A17980D /* reporting_setup.py */; };
 		3BF450884832CB8437EC236D /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DDE055A8F9685A8BF1FEEEE /* AppModel.swift */; };
 		3EAAC859513A6D37A74EF485 /* TmuxProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = D136AFCF738636A9642D8553 /* TmuxProtocol.swift */; };
 		493E9A793F1732EAD25785A9 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = C85F9130070FE84D7DDAD3D1 /* NIOCore */; };
+		5CDC4B97C20F382232CDEBEF /* delux-agent-status.ts in Resources */ = {isa = PBXBuildFile; fileRef = 98888B0C7D361DBBDF5E4A46 /* delux-agent-status.ts */; };
+		5EB07227BD0B738B260F04A2 /* SSHRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 411BCE5CBD99635AAA67A6A8 /* SSHRouteTests.swift */; };
 		635420C12692FF98EFC2CB14 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03753001EC8386464D8C4564 /* Theme.swift */; };
 		63958B76C1774333EEB37025 /* CredentialStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27298C9DDDD405B397E1573 /* CredentialStoreTests.swift */; };
 		68178CD2B67C53D5E3EB35DC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E33EDC7A10A772EF65252DAA /* Models.swift */; };
@@ -19,12 +25,16 @@
 		8165A83B3028EFE91C7A729A /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 706AB61E6F273C85F0987068 /* Crypto */; };
 		83AE33C5C2C4B50A9A05DF34 /* SSHTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00FF993B93F1FE5A3CEDAC3E /* SSHTransport.swift */; };
 		8647DE083EDE94D1FBC74D8C /* DeluxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49941859E6BA9D768910109E /* DeluxApp.swift */; };
+		89309CC6821E50A77B737EAC /* TerminalLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE39D1512F88521FD174708F /* TerminalLayoutTests.swift */; };
 		8D71776C78D328A5E88E7704 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 4569A7EF8C1BD9B585AB36C0 /* SwiftTerm */; };
 		903A8E0A62DD6D27D8BC74B3 /* TmuxProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB35C6CC329B1AF32CEA34C7 /* TmuxProtocolTests.swift */; };
 		9D3B31C92D9B66C7AA08628B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4E6FAB8EBFFEE63CAECB1325 /* Assets.xcassets */; };
 		A56B9B7E7A9FEED18C026238 /* NewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABABEEA92E7C11EEA34B3A66 /* NewSessionView.swift */; };
 		ABA033879193223DBDD7480F /* HostKeyPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C27A10D4B5C12CF169E0E3CF /* HostKeyPromptView.swift */; };
+		AE0E1EB9AD3AE3C5022B8B08 /* ReportingSetupModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D16CF60A068CCF980F12AFE2 /* ReportingSetupModel.swift */; };
+		B2BBA4E2862480D5A4896679 /* delux-agent-status.js in Resources */ = {isa = PBXBuildFile; fileRef = 4A886EC336272A99C1F3C5C8 /* delux-agent-status.js */; };
 		B6A923F8BBF95C5AB89FCBD2 /* ComputerFormView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D29427B2D762BBE59AC2A26 /* ComputerFormView.swift */; };
+		BB26169638A73B46C3A752D0 /* ReportingSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE69AD5BFCAB611D158D4BFB /* ReportingSetupView.swift */; };
 		BBC5DB8FBC325237682B4917 /* NIOPosix in Frameworks */ = {isa = PBXBuildFile; productRef = D2E97906B1D1C5537D01DCFF /* NIOPosix */; };
 		CAC1A99299397333034F5F94 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 371A85437D30A1C6B3864205 /* CredentialStore.swift */; };
 		E4B623B4CBF5B60970BE87EF /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3487EAAEAA73E91E70593CC /* DashboardView.swift */; };
@@ -48,14 +58,23 @@
 		2D29427B2D762BBE59AC2A26 /* ComputerFormView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerFormView.swift; sourceTree = "<group>"; };
 		371A85437D30A1C6B3864205 /* CredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStore.swift; sourceTree = "<group>"; };
 		3DDE055A8F9685A8BF1FEEEE /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		3FCC0C9D5DED74FE13F8C96A /* NearbyComputers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyComputers.swift; sourceTree = "<group>"; };
+		411BCE5CBD99635AAA67A6A8 /* SSHRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHRouteTests.swift; sourceTree = "<group>"; };
+		428AF16F77BBC478A6081C7E /* ReportingSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportingSetupTests.swift; sourceTree = "<group>"; };
 		49941859E6BA9D768910109E /* DeluxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeluxApp.swift; sourceTree = "<group>"; };
+		4A886EC336272A99C1F3C5C8 /* delux-agent-status.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "delux-agent-status.js"; sourceTree = "<group>"; };
 		4E6FAB8EBFFEE63CAECB1325 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		766BAFD10A0BF5E7B95C2748 /* ReportingSetupProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportingSetupProtocol.swift; sourceTree = "<group>"; };
+		777D3FCDCC8FBF92FBEE9F00 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		8EB3C098240BC0D8D1EA8251 /* DeluxTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DeluxTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		98888B0C7D361DBBDF5E4A46 /* delux-agent-status.ts */ = {isa = PBXFileReference; path = "delux-agent-status.ts"; sourceTree = "<group>"; };
 		A27298C9DDDD405B397E1573 /* CredentialStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialStoreTests.swift; sourceTree = "<group>"; };
 		ABABEEA92E7C11EEA34B3A66 /* NewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionView.swift; sourceTree = "<group>"; };
 		B6E782E45ABBB04A176AB2B4 /* TerminalHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHostView.swift; sourceTree = "<group>"; };
+		BB87330B2B8106418A17980D /* reporting_setup.py */ = {isa = PBXFileReference; lastKnownFileType = text.script.python; path = reporting_setup.py; sourceTree = "<group>"; };
 		C27A10D4B5C12CF169E0E3CF /* HostKeyPromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyPromptView.swift; sourceTree = "<group>"; };
 		D136AFCF738636A9642D8553 /* TmuxProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxProtocol.swift; sourceTree = "<group>"; };
+		D16CF60A068CCF980F12AFE2 /* ReportingSetupModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportingSetupModel.swift; sourceTree = "<group>"; };
 		D3487EAAEAA73E91E70593CC /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		DB35C6CC329B1AF32CEA34C7 /* TmuxProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxProtocolTests.swift; sourceTree = "<group>"; };
 		E2D98F75830D7E7529BBB68F /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
@@ -63,6 +82,8 @@
 		E34CB2E75C4867068EC943D9 /* TerminalScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalScreen.swift; sourceTree = "<group>"; };
 		EB48651D3268EA0767DDBD94 /* Delux.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Delux.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EC79CDF60125466FBAF67DA7 /* TerminalSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSessionController.swift; sourceTree = "<group>"; };
+		FE39D1512F88521FD174708F /* TerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLayoutTests.swift; sourceTree = "<group>"; };
+		FE69AD5BFCAB611D158D4BFB /* ReportingSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportingSetupView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +115,7 @@
 			isa = PBXGroup;
 			children = (
 				7157685E5E81DCA9F30B5DFA /* Delux */,
+				8B03C19CBF1E8A6185E22754 /* delux */,
 				8F3E16BB7AFFC04C7535ED2E /* DeluxTests */,
 				58BE59C57123353C5865DD2E /* Products */,
 			);
@@ -115,7 +137,11 @@
 				4E6FAB8EBFFEE63CAECB1325 /* Assets.xcassets */,
 				371A85437D30A1C6B3864205 /* CredentialStore.swift */,
 				49941859E6BA9D768910109E /* DeluxApp.swift */,
+				777D3FCDCC8FBF92FBEE9F00 /* Info.plist */,
 				E33EDC7A10A772EF65252DAA /* Models.swift */,
+				3FCC0C9D5DED74FE13F8C96A /* NearbyComputers.swift */,
+				D16CF60A068CCF980F12AFE2 /* ReportingSetupModel.swift */,
+				766BAFD10A0BF5E7B95C2748 /* ReportingSetupProtocol.swift */,
 				00FF993B93F1FE5A3CEDAC3E /* SSHTransport.swift */,
 				03753001EC8386464D8C4564 /* Theme.swift */,
 				D136AFCF738636A9642D8553 /* TmuxProtocol.swift */,
@@ -125,14 +151,52 @@
 			path = Delux;
 			sourceTree = "<group>";
 		};
+		7EAF58DBC1871C663BFD5D48 /* adapters */ = {
+			isa = PBXGroup;
+			children = (
+				BB87330B2B8106418A17980D /* reporting_setup.py */,
+				ACE2554ED919FCFDAC43EE1D /* opencode */,
+				8BB31E6CF5A7038FBBBBB84A /* pi */,
+			);
+			path = adapters;
+			sourceTree = "<group>";
+		};
+		8B03C19CBF1E8A6185E22754 /* delux */ = {
+			isa = PBXGroup;
+			children = (
+				7EAF58DBC1871C663BFD5D48 /* adapters */,
+			);
+			name = delux;
+			path = ..;
+			sourceTree = "<group>";
+		};
+		8BB31E6CF5A7038FBBBBB84A /* pi */ = {
+			isa = PBXGroup;
+			children = (
+				98888B0C7D361DBBDF5E4A46 /* delux-agent-status.ts */,
+			);
+			path = pi;
+			sourceTree = "<group>";
+		};
 		8F3E16BB7AFFC04C7535ED2E /* DeluxTests */ = {
 			isa = PBXGroup;
 			children = (
 				E2D98F75830D7E7529BBB68F /* AppModelTests.swift */,
 				A27298C9DDDD405B397E1573 /* CredentialStoreTests.swift */,
+				428AF16F77BBC478A6081C7E /* ReportingSetupTests.swift */,
+				411BCE5CBD99635AAA67A6A8 /* SSHRouteTests.swift */,
+				FE39D1512F88521FD174708F /* TerminalLayoutTests.swift */,
 				DB35C6CC329B1AF32CEA34C7 /* TmuxProtocolTests.swift */,
 			);
 			path = DeluxTests;
+			sourceTree = "<group>";
+		};
+		ACE2554ED919FCFDAC43EE1D /* opencode */ = {
+			isa = PBXGroup;
+			children = (
+				4A886EC336272A99C1F3C5C8 /* delux-agent-status.js */,
+			);
+			path = opencode;
 			sourceTree = "<group>";
 		};
 		EBA4AE3AFCE7F090A37831D0 /* Views */ = {
@@ -142,6 +206,7 @@
 				D3487EAAEAA73E91E70593CC /* DashboardView.swift */,
 				C27A10D4B5C12CF169E0E3CF /* HostKeyPromptView.swift */,
 				ABABEEA92E7C11EEA34B3A66 /* NewSessionView.swift */,
+				FE69AD5BFCAB611D158D4BFB /* ReportingSetupView.swift */,
 				E34CB2E75C4867068EC943D9 /* TerminalScreen.swift */,
 			);
 			path = Views;
@@ -241,6 +306,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				9D3B31C92D9B66C7AA08628B /* Assets.xcassets in Resources */,
+				B2BBA4E2862480D5A4896679 /* delux-agent-status.js in Resources */,
+				5CDC4B97C20F382232CDEBEF /* delux-agent-status.ts in Resources */,
+				37ABE7C5CA138F83AFCD3E14 /* reporting_setup.py in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -253,6 +321,9 @@
 			files = (
 				3048ECF91CAC405A6E9921E1 /* AppModelTests.swift in Sources */,
 				63958B76C1774333EEB37025 /* CredentialStoreTests.swift in Sources */,
+				24CCEAEA2015DA9AB5499B69 /* ReportingSetupTests.swift in Sources */,
+				5EB07227BD0B738B260F04A2 /* SSHRouteTests.swift in Sources */,
+				89309CC6821E50A77B737EAC /* TerminalLayoutTests.swift in Sources */,
 				903A8E0A62DD6D27D8BC74B3 /* TmuxProtocolTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -268,7 +339,11 @@
 				8647DE083EDE94D1FBC74D8C /* DeluxApp.swift in Sources */,
 				ABA033879193223DBDD7480F /* HostKeyPromptView.swift in Sources */,
 				68178CD2B67C53D5E3EB35DC /* Models.swift in Sources */,
+				27D72E2B2CF7645FAAA5069B /* NearbyComputers.swift in Sources */,
 				A56B9B7E7A9FEED18C026238 /* NewSessionView.swift in Sources */,
+				AE0E1EB9AD3AE3C5022B8B08 /* ReportingSetupModel.swift in Sources */,
+				32C5E406F82BE24A2186ED1E /* ReportingSetupProtocol.swift in Sources */,
+				BB26169638A73B46C3A752D0 /* ReportingSetupView.swift in Sources */,
 				83AE33C5C2C4B50A9A05DF34 /* SSHTransport.swift in Sources */,
 				78F9CCBC3E0CA648D2AEC12B /* TerminalHostView.swift in Sources */,
 				F73A8A4CD17E0F4FBED3387A /* TerminalScreen.swift in Sources */,
@@ -298,9 +373,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Delux/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Delux;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Delux connects over SSH to the computers you add, including hosts on your local network or a VPN such as Tailscale.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Delux discovers nearby SSH computers and connects to computers you add on your local network or VPN.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -453,9 +529,10 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Delux/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Delux;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Delux connects over SSH to the computers you add, including hosts on your local network or a VPN such as Tailscale.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Delux discovers nearby SSH computers and connects to computers you add on your local network or VPN.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
