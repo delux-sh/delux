@@ -11,6 +11,7 @@ mod embedded;
 mod exit_codes;
 mod files;
 mod lan;
+mod launcher;
 mod options;
 mod process;
 mod reporting;

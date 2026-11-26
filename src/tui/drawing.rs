@@ -457,8 +457,9 @@ impl Picker {
         let hints: &[(&str, &str)] = if self.creation.is_some() {
             &[
                 ("tab", "complete dir / next"),
-                ("↑↓", "fields"),
-                ("enter", "create"),
+                ("↑↓", "fields / options"),
+                ("enter", "next / activate"),
+                ("space", "select / toggle"),
                 ("esc", "back"),
                 ("ctrl-u", "clear"),
                 ("ctrl-c/shift-tab", "back"),

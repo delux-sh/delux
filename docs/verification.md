@@ -1,5 +1,74 @@
 # Verification record
 
+## Create action separation
+
+Added a blank row between the settings and Create session; the spacer collapses with labels when only one form row fits. The 33 form tests passed after removing a hint-wording assertion, formatting passed, and the release binary was rebuilt. Inspected the running picker at 80×24 and 40×6: the gap is visible and the focused Create action remains accessible. Private fixture processes and files were removed.
+
+## Discovery recovery and completion overflow fixes
+
+The two P2 findings from the new-session review are fixed. An unfinished launcher check cancelled by creation resumes only after the failed creation and its mandatory rescan settle, with the same computer Ready. Directory matches and status messages use Ratatui's actual word-wrap line counts; clipped suggestions reserve a visible overflow row.
+
+- All 33 form tests and 127 CLI component tests passed, along with formatting and the macOS ARM64 release build. Regressions cover Shell/Custom recovery in the same form, cancellation and stale epochs, changed/not-ready computers, no automatic retry of a completed discovery failure, three long matches, capped overflow and wrapped error visibility.
+- A private SSH fixture delayed its first real launcher probe by three seconds. An early Shell creation failed on a duplicate session name. The same form recovered installed choices after exactly one replacement probe, then created and attached a real OMP session after the name was corrected. OMP visibly reached onboarding; no login or model request was performed.
+- Inspected the release at 80×24 and 40×15. Three long directory matches all appeared beneath the input. Adding a fourth produced an explicit `… more results` row, and typing more completed a previously hidden directory.
+- The initial smoke predicate expected “already exists”; tmux actually reported “duplicate session.” The remaining checks used that observed error and awaited the actual SSH client attachment rather than only the new session's inventory entry.
+- Private fixture processes and files were removed. `target/release/delux` was rebuilt; no commit, push or Homebrew publication was performed. The older preflight-error wording finding is separate and unchanged.
+
+## Always-visible launcher choices
+
+Start now shows indented radio choices instead of a dropdown. Up/Down moves focus without selecting; Space selects and stays on the option; Enter selects and advances. Tab advances without committing a different highlighted option. Esc cancels the form directly. Installed-tool filtering and per-option missing/checking notes remain, and only Create session submits.
+
+- The 29 existing form tests and 115 CLI component tests passed after the cutover. A compact-layout refinement added a regression and all 30 form tests then passed; formatting and the final macOS ARM64 release build passed.
+- In a private SSH fixture, all six installed choices were visible immediately at 130×34 without opening anything. Arrowing to Codex left Shell selected; Space selected Codex without creating a session. Selecting Custom command and activating Create later ran the command in the completed remote directory and attached to that exact session.
+- Final 40×15 inspection retained partial option lists rather than dropping the entire group when space was short. Name remained visible initially; the selected Custom option, its command and Create remained visible together at the bottom. Arrow traversal crossed the last option into Command, and Esc cancelled without creating anything.
+- README and command help describe the inline interaction. Private fixture processes and files were removed. No commit, push or Homebrew publication was performed. The separate product/code review identified unresolved tool-discovery recovery and wrapped-completion clipping issues; this interaction change does not resolve those findings.
+
+## Inline directory completion
+
+Directory matches now appear directly beneath the path, followed by their completion status, before Start and the remaining settings. Feedback stays with Directory when focus moves and yields to the focused control and global errors on short terminals.
+
+- All 29 form tests and 115 CLI component tests passed, along with formatting and the macOS ARM64 release build. The regression checks adjacency before other settings, retained placement after focus changes, compact completion and final-action visibility.
+- Inspected the release picker at 130×34 and 40×15 against a private SSH computer. Tab showed `projects/  proto/` immediately under `~/fixture/pro`, with match feedback next. Editing cleared stale choices; a unique completion showed its existence feedback directly below the completed path. Moving to Create session did not detach the suggestions or create a session.
+- Private tmux/SSH fixture processes and files were removed. `target/release/delux` was rebuilt; no commit, push or Homebrew publication was performed.
+
+## Explicit Create session action
+
+New session now ends with a focused, explicit Create session action. Enter in Name, Directory, Profile, Custom command or Use as default advances without submitting; Start keeps its dropdown behavior. Only Enter or Space on Create session validates, creates and attaches.
+
+- All 28 form tests and 115 CLI component tests passed, along with formatting and the macOS ARM64 release build. Regression coverage reproduces Name → Enter → edit Directory, exercises every launcher and both button activation keys, preserves validation and busy-state behavior, and keeps the action visible in a one-row form.
+- The release picker ran against private tmux and SSH servers. Name + Enter left the form open; Directory Tab completed a remote path containing spaces. Selecting Custom command and advancing through its command and default setting created nothing. Activating Create session then launched the chosen command in that exact directory and attached to the new session.
+- Inspected the final action at 130×34 and 40×15. Private fixture processes and files were removed. `target/release/delux` was rebuilt; no commit, push or Homebrew publication was performed.
+
+## Explicit vertical launcher selection
+
+Start now opens a vertical menu with Space or Enter. Up/Down changes only the highlight; Space or Enter confirms without creating a session. The current choice has a check. Esc discards the highlight, while Tab discards it and advances to the next field. Installed-tool discovery, missing-default warnings and explicit default saving remain unchanged.
+
+- All 27 form tests and 114 CLI component tests passed. Regression coverage includes confirmation without submission, Escape/Tab cancellation, asynchronous availability updates preserving the highlighted launcher, unavailable-choice refusal and short-layout visibility.
+- The release picker ran against private tmux and SSH servers. Highlighting Codex left Shell checked and created nothing. Escape restored Shell; Enter and Space confirmed choices without creating anything. A later explicit submission from Custom command created a remote session, printed `DROPDOWN_OK` and attached to that exact session.
+- Inspected 130×34 and 40×15 layouts. The first live inspection exposed fragments of covered form hints beside the menu; clearing the covered rows fixed them. The focused layout regression, formatting check and release build passed after that refinement, and the rebuilt picker was inspected at both sizes. First Escape closed the menu; second Escape cancelled the form.
+- Private fixture processes and files were removed. The macOS ARM64 release binary was rebuilt; this change was not committed, pushed or published to Homebrew.
+
+## Installed Claude and Codex launchers
+
+New session checks executable availability for OMP, Claude and Codex on the selected computer, including through noninteractive SSH. Only installed named tools join Start; Shell and Custom remain available while checking. A missing saved default stays visibly selected and refuses submission rather than silently changing to Shell. Discovery failures remain distinct from absence, and stale replies cannot authorize a reopened form or changed SSH identity.
+
+- Six launcher tests, 25 form tests and 114 CLI component tests passed. Formatting and the macOS ARM64 release build passed.
+- Private local and SSH computers had deliberately different PATHs pointing to real installed executables: OMP/Claude locally, Codex remotely. The running selector showed the correct tools on each computer. Claude Code 2.1.328 visibly opened its onboarding locally; Codex CLI 0.171.0 visibly opened its sign-in screen over SSH. No account login or model request was performed.
+- The first Codex run exposed a fixture error: its explicit CODEX_HOME did not exist. After creating that private directory, the remaining Codex checks passed. Native Codex onboarding was awaited explicitly rather than treating a blank attached terminal as visual proof.
+- Claude and Codex were saved as defaults. Missing defaults refused creation without fallback or state changes; the Codex default survived a picker restart and was flagged missing on the local computer. A controlled SSH failure displayed unknown availability rather than incorrectly declaring the tool absent.
+- Inspected normal 130×34 and compact 40×15 layouts. Private tmux/SSH servers, homes, executable links and diagnostic/smoke scripts were removed. This verifies CLI executable discovery and launch, not authentication, Attention reporting, iPhone changes or a Homebrew publication.
+
+## CLI session launchers and saved defaults
+
+New session provides Shell, OMP, Resume OMP…, and Custom command. OMP modes expose an optional named profile; Resume delegates history selection to OMP's own terminal picker. The explicit Use as default checkbox saves only the selected launcher/profile/custom command after successful creation. Defaults apply across computers, not to names or working directories. Cancellation, failure and unchecked one-off changes do not replace them.
+
+- Three launcher tests, 15 state tests, 21 form tests and 111 CLI component tests passed. Coverage includes invalid profiles and command injection, legacy state, concurrent pin/default preservation, cancelled late replies, save failures, hidden field drafts, directory completion and tiny layouts. Formatting and the macOS ARM64 release build passed.
+- The running release started the actual installed OMP 19.2.1 in an isolated profile and saved that choice. Over real loopback SSH, Resume OMP displayed its native current-folder picker and restored a selected private JSONL conversation. These were real OMP processes with synthetic history and no provider credentials or model requests.
+- Restarting the private Delux picker retained the OMP default and profile. A one-off Resume choice and cancelled default change left the saved state unchanged. A custom shell command ran visibly and became the new default without retaining the OMP profile.
+- Inspected the actual form at 130×34 and 55×15: the full Start row becomes a compact selected choice at narrow width, with profile and default checkbox still visible. Private tmux/SSH fixtures, OMP profile/history and the throwaway smoke script were removed.
+
+Profile validation follows OMP's [named-profile rules](https://github.com/can1357/oh-my-pi/blob/main/packages/utils/src/dirs.ts). Launching another terminal harness through Custom command does not establish its Attention reporting. This change is CLI-only, uncommitted and not published to Homebrew at verification time.
+
 ## CLI new-session directory completion
 
 Tab in Directory performs a read-only lookup on the selected computer, locally or over existing noninteractive SSH. Unique matches fill a trailing slash; complete ambiguous results extend the common prefix and list choices. Partial results never infer a prefix. Up/Down changes fields. Editing, submitting or closing the form invalidates pending results; reopening an identical form cannot accept an earlier reply.

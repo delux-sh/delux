@@ -170,7 +170,7 @@ impl Picker {
                 }
             }
             KeyCode::Char('f') => self.toggle_pin(),
-            KeyCode::Char('n') => self.start_creation(),
+            KeyCode::Char('n') => return self.start_creation(),
             KeyCode::Char('x') => self.start_ending(),
             KeyCode::Char('u') => return self.start_user_input(false),
             KeyCode::Char('a') => {
@@ -202,18 +202,24 @@ impl Picker {
         }
     }
 
-    pub(super) fn start_creation(&mut self) {
+    fn stop_launcher_lookup(&mut self) {
+        if let Some(cancel) = self.launcher_lookup_pending.take() {
+            cancel.cancel();
+        }
+    }
+
+    pub(super) fn start_creation(&mut self) -> Option<Command> {
         if self.ending_pending.is_some() {
             self.notice = "Waiting for the end-session request to settle…".into();
-            return;
+            return None;
         }
         if self.creation_pending.is_some() {
             self.notice = "Waiting for the previous creation request to stop…".into();
-            return;
+            return None;
         }
         let Some(row) = self.current_row() else {
             self.notice = "Select a computer before creating a session.".into();
-            return;
+            return None;
         };
         let entry = &self.entries[row.entry];
         if entry.status() != Status::Ready {
@@ -222,7 +228,7 @@ impl Picker {
             } else {
                 "This computer is not ready; check tmux and press r to rescan.".into()
             };
-            return;
+            return None;
         }
         let directory = self
             .session(row)
@@ -230,9 +236,15 @@ impl Picker {
         let directory = directory.to_owned();
         let worker = entry.worker.clone();
         self.stop_directory_completion();
-        self.creation = Some(SessionForm::new(worker, directory));
+        self.stop_launcher_lookup();
+        self.creation = Some(SessionForm::new(
+            worker,
+            directory,
+            self.state.launcher.clone().unwrap_or_default(),
+        ));
         self.terminal_focused = false;
         self.notice.clear();
+        self.launcher_lookup_tick()
     }
 
     fn creation_key(&mut self, key: KeyEvent) -> Option<Command> {
@@ -243,6 +255,7 @@ impl Picker {
         match action? {
             FormAction::Cancel => {
                 self.stop_directory_completion();
+                self.stop_launcher_lookup();
                 self.creation = None;
                 if let Some(cancel) = &self.creation_pending {
                     cancel.cancel();
@@ -270,10 +283,12 @@ impl Picker {
                     form.error = "Computer is no longer ready. Esc to return and reconnect.".into();
                     return None;
                 }
+                let worker = form.worker.clone();
+                self.stop_launcher_lookup();
                 let cancel = self.cancel.child();
                 self.creation_pending = Some(cancel.clone());
                 Some(Command::Create {
-                    worker: form.worker.clone(),
+                    worker,
                     request,
                     cancel,
                 })

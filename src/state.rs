@@ -1,4 +1,5 @@
 use crate::files::{FILE_LIMIT, read_utf8, xdg_path};
+use crate::launcher::Launcher;
 use serde::{Deserialize, Serialize};
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
@@ -12,6 +13,8 @@ pub struct State {
     pub pins: Vec<Pin>,
     /// Legacy history is preserved on disk, but never displayed or updated.
     pub recent: Vec<Recent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<Launcher>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +36,7 @@ pub struct Recent {
 #[derive(Clone, Copy)]
 pub(crate) enum StateChange<'a> {
     TogglePin { worker: &'a str, session: &'a str },
+    SetLauncher(&'a Launcher),
 }
 
 /// Uses XDG_STATE_HOME, falling back to ~/.local/state.
@@ -43,7 +47,7 @@ pub fn default_state_path() -> Result<String, String> {
 /// Missing state is empty; malformed or oversized state is never silently discarded.
 pub fn load_state(path: &str) -> Result<State, String> {
     read_state(path).map_err(|error| {
-        format!("{path}: unreadable picker state ({error}); move it aside to reset pins")
+        format!("{path}: unreadable picker state ({error}); move it aside to reset pins and launcher defaults")
     })
 }
 
@@ -62,14 +66,29 @@ fn read_state(path: &str) -> Result<State, String> {
             return Err(format!("Picker state '{name}' must be an array of objects"));
         }
     }
-    serde_json::from_value(serde_json::Value::Object(fields))
-        .map_err(|error| format!("Invalid picker state: {error}"))
+    if fields
+        .get("launcher")
+        .is_some_and(|value| !value.is_null() && !value.is_object())
+    {
+        return Err("Picker state 'launcher' must be an object or null".into());
+    }
+    let state: State = serde_json::from_value(serde_json::Value::Object(fields))
+        .map_err(|error| format!("Invalid picker state: {error}"))?;
+    if let Some(launcher) = &state.launcher {
+        launcher
+            .validate()
+            .map_err(|error| format!("Invalid saved launcher: {error}"))?;
+    }
+    Ok(state)
 }
 
 /// Applies one operation to fresh state under a stable, cross-process lock.
 pub(crate) fn update_state(path: &str, change: StateChange<'_>) -> Result<State, String> {
     locked_update(path, |target| {
         let mut state = load_state(target)?;
+        if let StateChange::SetLauncher(launcher) = change {
+            launcher.validate()?;
+        }
         state.apply(change);
         let mut raw = serde_json::to_vec_pretty(&state)
             .map_err(|error| format!("Serialize picker state: {error}"))?;
@@ -183,6 +202,9 @@ impl State {
             StateChange::TogglePin { worker, session } => {
                 self.toggle_pin(worker, session);
             }
+            StateChange::SetLauncher(launcher) => {
+                self.launcher = Some(launcher.normalized());
+            }
         }
     }
 
@@ -211,10 +233,132 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launcher::LaunchMode;
     use crate::test_support::{EnvVar, TempDir, env_read, env_write};
     use std::io::Read;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn legacy_state_defaults_to_shell_without_rewriting_history() {
+        let dir = TempDir::new();
+        let path = dir.path().join("state.json");
+        let path = path.to_str().unwrap();
+        let raw = r#"{"pins":[{"computer":"local","session":"work"}],"recent":[{"computer":"old","session":"past"}]}"#;
+        std::fs::write(path, raw).unwrap();
+        let legacy = load_state(path).unwrap();
+        assert_eq!(legacy.launcher, None);
+        assert_eq!(
+            legacy.launcher.clone().unwrap_or_default().mode,
+            LaunchMode::Shell
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+        let launcher = Launcher {
+            mode: LaunchMode::ResumeOmp,
+            profile: "work".into(),
+            command: "discarded command".into(),
+        };
+        let saved = update_state(path, StateChange::SetLauncher(&launcher)).unwrap();
+        assert_eq!(saved.pins, legacy.pins);
+        assert_eq!(saved.recent, legacy.recent);
+        assert_eq!(saved.launcher, Some(launcher.normalized()));
+        assert_eq!(load_state(path).unwrap(), saved);
+        let saved = update_state(
+            path,
+            StateChange::TogglePin {
+                worker: "remote",
+                session: "other",
+            },
+        )
+        .unwrap();
+        assert_eq!(saved.launcher, Some(launcher.normalized()));
+        assert_eq!(saved.recent, legacy.recent);
+        assert!(saved.is_pinned("local", "work"));
+        assert!(saved.is_pinned("remote", "other"));
+        let shell = Launcher::default();
+        let shell_saved = update_state(path, StateChange::SetLauncher(&shell)).unwrap();
+        assert_eq!(shell_saved.launcher, Some(shell));
+        assert_eq!(shell_saved.pins, saved.pins);
+        assert_eq!(shell_saved.recent, saved.recent);
+        assert_eq!(load_state(path).unwrap(), shell_saved);
+    }
+
+    #[test]
+    fn malformed_saved_launchers_refuse_load_and_all_updates() {
+        let dir = TempDir::new();
+        let path = dir.path().join("state.json");
+        let path = path.to_str().unwrap();
+        let mut invalid = vec![
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!(["omp", "", ""]),
+            serde_json::json!("omp"),
+            serde_json::json!({"mode": "unknown"}),
+            serde_json::json!({"mode": "omp", "profile": "../escape"}),
+            serde_json::json!({"mode": "omp", "profile": "$(touch marker)"}),
+            serde_json::json!({"mode": "omp", "profile": "a\nb"}),
+            serde_json::json!({"mode": "omp", "profile": null}),
+            serde_json::json!({"mode": "omp", "unexpected": true}),
+            serde_json::json!({"mode": "custom", "command": ""}),
+            serde_json::json!({"mode": "custom", "command": "   "}),
+            serde_json::json!({"mode": "custom", "command": "a\nb"}),
+            serde_json::json!({"mode": "custom", "command": "a\u{0}b"}),
+            serde_json::json!({"mode": "custom", "command": false}),
+        ];
+        invalid.push(serde_json::json!({"mode": "omp", "profile": "a".repeat(65)}));
+        invalid.push(serde_json::json!({"mode": "custom", "command": "a".repeat(4097)}));
+        for launcher in invalid {
+            let raw = serde_json::to_vec(&serde_json::json!({
+                "pins": [{"computer": "local", "session": "work"}],
+                "recent": [{"computer": "old", "session": "past"}],
+                "launcher": launcher,
+            }))
+            .unwrap();
+            std::fs::write(path, &raw).unwrap();
+            assert!(load_state(path).is_err(), "accepted {launcher}");
+            for change in [
+                StateChange::TogglePin {
+                    worker: "remote",
+                    session: "other",
+                },
+                StateChange::SetLauncher(&Launcher::default()),
+            ] {
+                assert!(update_state(path, change).is_err());
+                assert_eq!(std::fs::read(path).unwrap(), raw);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_launcher_updates_preserve_existing_state() {
+        let dir = TempDir::new();
+        let path = dir.path().join("state.json");
+        let path = path.to_str().unwrap();
+        let saved = update_state(
+            path,
+            StateChange::TogglePin {
+                worker: "local",
+                session: "work",
+            },
+        )
+        .unwrap();
+        let raw = std::fs::read(path).unwrap();
+        for launcher in [
+            Launcher {
+                mode: LaunchMode::Custom,
+                ..Launcher::default()
+            },
+            Launcher {
+                mode: LaunchMode::Omp,
+                profile: "../escape".into(),
+                command: String::new(),
+            },
+        ] {
+            assert!(update_state(path, StateChange::SetLauncher(&launcher)).is_err());
+            assert_eq!(std::fs::read(path).unwrap(), raw);
+            assert_eq!(load_state(path).unwrap(), saved);
+        }
+    }
 
     #[test]
     fn default_path_uses_xdg_then_home() {
@@ -498,6 +642,11 @@ mod tests {
         let path = std::env::var_os("DELUX_STATE_TEST_PATH").expect("writer fixture path");
         let worker = std::env::var("DELUX_STATE_TEST_WORKER").unwrap();
         std::io::stdin().read_exact(&mut [0]).unwrap();
+        let launcher = Launcher {
+            mode: LaunchMode::Omp,
+            profile: "concurrent".into(),
+            command: String::new(),
+        };
         for index in 0..8 {
             update_state(
                 path.to_str().unwrap(),
@@ -507,6 +656,9 @@ mod tests {
                 },
             )
             .unwrap();
+            if worker == "0" {
+                update_state(path.to_str().unwrap(), StateChange::SetLauncher(&launcher)).unwrap();
+            }
         }
     }
 
@@ -561,6 +713,14 @@ mod tests {
         assert_eq!(state.pins.len(), 33);
         assert!(state.is_pinned("original", "main"));
         assert!(state.recent.is_empty());
+        assert_eq!(
+            state.launcher,
+            Some(Launcher {
+                mode: LaunchMode::Omp,
+                profile: "concurrent".into(),
+                command: String::new(),
+            })
+        );
         for index in 0..4 {
             let worker = index.to_string();
             for session in 0..8 {
