@@ -232,6 +232,20 @@ impl Harness {
                     result,
                 })
             }
+            Command::InspectLaunchers { epoch, worker, .. } => {
+                self.picker.update(Message::LaunchersFound {
+                    epoch,
+                    worker,
+                    result: Ok(crate::launcher::InstalledLaunchers {
+                        omp: true,
+                        claude: false,
+                        codex: false,
+                    }),
+                })
+            }
+            Command::CompleteDirectory { .. } => {
+                panic!("Directory completion tests must deliver their response explicitly")
+            }
             Command::Create { .. } => {
                 panic!("Creation tests must deliver their completion explicitly")
             }
@@ -591,6 +605,29 @@ fn successful_end_closes_only_its_client_and_invalidates_older_scans() {
 }
 
 #[test]
+fn name_enter_leaves_directory_editable_until_create_is_activated() {
+    let computer = worker("box", "box");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    harness.press(&["n", "new-work", "enter"]);
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(!harness.picker.creation.as_ref().unwrap().busy);
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    harness.press(&["/srv/project", "enter", "tab", "enter"]);
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(harness.effects.borrow().states.is_empty());
+    let Some(Command::Create { request, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("only the final Create session action submits");
+    };
+    assert_eq!(request.name, "new-work");
+    assert_eq!(request.directory, "/srv/project");
+}
+
+#[test]
 fn creation_cancellation_preserves_the_client_and_never_attaches_late_success() {
     let mut harness = terminal_harness(&["/bin/cat"]);
     let started = harness.picker.active.as_ref().unwrap().started;
@@ -598,6 +635,7 @@ fn creation_cancellation_preserves_the_client_and_never_attaches_late_success() 
         .picker
         .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     harness.press(&["n", "new-work"]);
+    harness.press(&["up"]);
     let Some(Command::Create { worker, cancel, .. }) = harness
         .picker
         .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -637,11 +675,13 @@ fn creation_requires_a_ready_unchanged_computer() {
         .picker
         .update(Message::Checked(ready(&computer, vec![])));
     harness.press(&["n", "new-work"]);
+    harness.press(&["up"]);
     harness.picker.entries[0].worker.destination = Some("bob@box".into());
     harness.press(&["enter"]);
     assert!(harness.picker.creation_pending.is_none());
     assert!(!harness.picker.creation.as_ref().unwrap().busy);
     harness.press(&["esc", "n", "new-work"]);
+    harness.press(&["up"]);
     let Some(Command::Create { worker, .. }) = harness
         .picker
         .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -673,6 +713,7 @@ fn creation_success_appends_without_reordering_or_pinning_and_selects_exact_iden
         vec![ready(&computer, vec![first.clone(), second.clone()])],
     );
     harness.press(&["/", "second", "enter", "n", "new-work"]);
+    harness.press(&["up"]);
     let Some(Command::Create {
         worker, request, ..
     }) = harness
@@ -719,6 +760,7 @@ fn creation_success_rejects_an_older_inflight_scan() {
     harness.picker.selection = Selection::Computer(computer.key.clone());
     harness.picker.rebuild();
     harness.press(&["n", "new-work"]);
+    harness.press(&["up"]);
     let Some(Command::Create { worker, .. }) = harness
         .picker
         .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -775,6 +817,7 @@ fn creation_failure_rescans_without_retrying_or_replacing_the_client() {
         .picker
         .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     harness.press(&["n", "new-work"]);
+    harness.press(&["up"]);
     let Some(Command::Create { worker, .. }) = harness
         .picker
         .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -845,6 +888,7 @@ fn creation_form_owns_keys_paste_and_wheel_in_all_layouts() {
         assert_eq!(harness.picker.selection, selection);
         assert!(!harness.picker.show_scroll_hint);
     }
+    harness.press(&["up"]);
     let Some(Command::Create { request, .. }) = harness
         .picker
         .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -888,7 +932,7 @@ fn terminal_focus_keeps_shortcuts_and_paste_out_of_the_picker() {
 }
 
 #[test]
-fn directional_focus_preserves_client_and_active_identity_while_browsing() {
+fn tab_opens_highlighted_session_and_reuses_its_existing_connection() {
     let mut harness = terminal_harness(&["/bin/cat"]);
     let back = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert!(harness.picker.key(back).is_none());
@@ -908,9 +952,13 @@ fn directional_focus_preserves_client_and_active_identity_while_browsing() {
         ),
         terminal_columns,
     );
-    harness.press(&["esc"]);
-    harness.press(&["down", "tab"]);
+    harness.press(&["esc", "up"]);
+    harness.press(&["tab"]);
     assert!(harness.picker.terminal_focused);
+    assert!(harness.launched().is_empty());
+    assert!(harness.picker.key(back).is_none());
+    harness.press(&["down"]);
+    assert!(!harness.picker.terminal_focused);
     assert_eq!(harness.picker.selected_session().unwrap().1.id, "$1");
     assert_eq!(
         harness
@@ -925,16 +973,7 @@ fn directional_focus_preserves_client_and_active_identity_while_browsing() {
         "$0"
     );
     assert!(harness.launched().is_empty());
-    assert!(harness.picker.key(back).is_none());
-    harness.press(&["1", "2", "tab"]);
-    assert!(harness.picker.terminal_focused);
-    assert!(harness.launched().is_empty());
-    assert!(harness.picker.key(back).is_none());
-    harness.press(&["up", "enter"]);
-    assert!(harness.launched().is_empty());
-    assert!(harness.picker.terminal_focused);
-    assert!(harness.picker.key(back).is_none());
-    harness.press(&["down", "enter"]);
+    harness.press(&["tab"]);
     let launched = harness.launched();
     assert_eq!(launched.len(), 1);
     assert_eq!(launched[0].session.as_ref().unwrap().id, "$1");
@@ -1045,17 +1084,18 @@ fn browsing_previews_other_sessions_without_disconnect() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    harness.press(&["tab"]);
+    harness.press(&["up", "tab"]);
     let view = harness.rendered(120, 30);
     assert!(view.contains("BACKGROUND_OUTPUT"), "{view}");
     assert!(!view.contains("output of other on box"), "{view}");
     assert!(harness.picker.terminal_visible);
     assert!(!harness.picker.preview_visible);
     assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
-    assert_eq!(harness.picker.selected_session().unwrap().1.id, "$1");
+    assert_eq!(harness.picker.selected_session().unwrap().1.id, "$0");
     assert!(harness.launched().is_empty());
 
     harness.picker.key(back);
+    harness.press(&["down"]);
     let view = harness.rendered(120, 30);
     assert!(view.contains("output of other on box"), "{view}");
     harness.press(&["up"]);
@@ -2762,6 +2802,7 @@ fn only_explicit_pins_are_shown_and_saved() {
             worker: "a".into(),
             session: "main".into(),
         }],
+        ..State::default()
     };
     let mut harness = Harness::with_state(workers, inventories, state);
     let view = harness.rendered(180, 30);
@@ -2804,6 +2845,7 @@ fn launching_does_not_add_pins_and_keeps_the_session_selected() {
                 worker: "a".into(),
                 session: "side".into(),
             }],
+            ..State::default()
         },
     );
     assert!(!harness.rendered(60, 24).contains("Pinned"));
@@ -4502,4 +4544,939 @@ fn browse_attention_removal_hides_empty_section_without_retargeting_enter() {
         row.kind,
         RowKind::NeedsInputHeader | RowKind::AttentionSession
     )));
+}
+
+#[test]
+fn directory_completion_does_not_overwrite_edits_or_disconnect_the_client() {
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness
+        .picker
+        .key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    harness.press(&["n", "new-work", "tab"]);
+    let Some(Command::CompleteDirectory {
+        epoch,
+        worker,
+        path,
+        cancel,
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected directory lookup");
+    };
+    harness.press(&["x", "backspace"]);
+    assert!(cancel.is_cancelled());
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch,
+        worker,
+        path,
+        result: Ok(crate::directory_completion::DirectoryCompletion {
+            path: "~/".into(),
+            exists: true,
+            matches: vec!["~/unwanted/".into()],
+            truncated: false,
+        }),
+    });
+    harness.press(&["up", "up"]);
+    let Some(Command::Create { request, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(request.directory, "~");
+    assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn directory_completion_reopened_form_rejects_old_reply_and_uses_exact_remote_path() {
+    let computer = remote("box", "box", "alice@box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![session("$0", "work")])],
+    );
+    harness.press(&["n", "old-work", "tab"]);
+    let Some(Command::CompleteDirectory {
+        epoch: old_epoch,
+        cancel: old_cancel,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected first lookup");
+    };
+    harness.press(&["esc", "n", "new-work", "tab"]);
+    assert!(old_cancel.is_cancelled());
+    let Some(Command::CompleteDirectory {
+        epoch,
+        worker,
+        path,
+        cancel,
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected second lookup");
+    };
+    assert_eq!(worker, computer);
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch: old_epoch,
+        worker: worker.clone(),
+        path: path.clone(),
+        result: Err("old connection failed".into()),
+    });
+    assert!(!cancel.is_cancelled());
+    assert!(
+        harness
+            .picker
+            .creation
+            .as_ref()
+            .unwrap()
+            .directory_completion_pending()
+    );
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch,
+        worker,
+        path,
+        result: Ok(crate::directory_completion::DirectoryCompletion {
+            path: "~/".into(),
+            exists: true,
+            matches: vec!["~/Projects with spaces/".into()],
+            truncated: false,
+        }),
+    });
+    harness.press(&["up", "up"]);
+    let Some(Command::Create {
+        worker, request, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(worker, computer);
+    assert_eq!(request.name, "new-work");
+    assert_eq!(request.directory, "~/Projects with spaces/");
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn directory_completion_rejects_a_changed_computer() {
+    let computer = remote("box", "box", "alice@box");
+    let mut harness = Harness::new(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![session("$0", "work")])],
+    );
+    harness.press(&["n", "new-work", "tab"]);
+    let Some(Command::CompleteDirectory {
+        epoch,
+        worker,
+        path,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+    else {
+        panic!("expected lookup");
+    };
+    harness.picker.entries[0].worker.destination = Some("bob@box".into());
+    harness.picker.update(Message::DirectoryCompleted {
+        epoch,
+        worker,
+        path,
+        result: Ok(crate::directory_completion::DirectoryCompletion {
+            path: "~/".into(),
+            exists: true,
+            matches: vec!["~/wrong-account/".into()],
+            truncated: false,
+        }),
+    });
+    assert!(
+        !harness
+            .picker
+            .creation
+            .as_ref()
+            .unwrap()
+            .directory_completion_pending()
+    );
+    harness.press(&["up", "up", "enter"]);
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn launcher_default_saves_after_success_and_applies_to_another_computer() {
+    let local = worker("local", "local");
+    let other = remote("remote", "remote", "alice@remote");
+    let mut harness = Harness::new(
+        vec![local.clone(), other.clone()],
+        vec![ready(&local, vec![]), ready(&other, vec![])],
+    );
+    harness.picker.selection = Selection::Computer(local.key.clone());
+    harness.picker.rebuild();
+    harness.press(&[
+        "n", "first", "down", "down", "down", " ", "tab", "work", "down", " ",
+    ]);
+    harness.press(&["down"]);
+    let Some(Command::Create {
+        worker, request, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    assert_eq!(worker, local);
+    assert_eq!(request.command, "omp --profile=work");
+    assert!(harness.effects.borrow().states.is_empty());
+    let created = session("$1", "first");
+    assert!(matches!(
+        harness.picker.update(Message::Created {
+            worker,
+            result: Ok((created.clone(), vec![created])),
+        }),
+        Some(Command::Launch(_))
+    ));
+    assert_eq!(harness.effects.borrow().states.len(), 1);
+    harness.picker.selection = Selection::Computer(other.key.clone());
+    harness.picker.rebuild();
+    harness.press(&["n", "second"]);
+    harness.press(&["up"]);
+    let Some(Command::Create {
+        worker, request, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected creation with saved launcher");
+    };
+    assert_eq!(worker, other);
+    assert_eq!(request.command, "omp --profile=work");
+    assert_eq!(harness.effects.borrow().states.len(), 1);
+}
+
+#[test]
+fn launcher_default_is_not_saved_after_failure_or_cancelled_late_success() {
+    for cancel in [false, true] {
+        let computer = worker("local", "local");
+        let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+        harness.press(&[
+            "n", "first", "down", "down", "down", " ", "tab", "work", "down", " ",
+        ]);
+        harness.press(&["down"]);
+        let Some(Command::Create { worker, .. }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("expected explicit creation");
+        };
+        let result = if cancel {
+            harness.press(&["esc"]);
+            let created = session("$1", "first");
+            Ok((created.clone(), vec![created]))
+        } else {
+            Err((Status::ProbeFailed, "Connection lost".into()))
+        };
+        assert!(matches!(
+            harness.picker.update(Message::Created { worker, result }),
+            Some(Command::Discover { .. })
+        ));
+        assert!(harness.picker.state.launcher.is_none());
+        assert!(harness.effects.borrow().states.is_empty());
+        assert!(harness.launched().is_empty());
+    }
+}
+
+#[test]
+fn launcher_one_off_shell_does_not_replace_saved_omp_profile() {
+    let computer = worker("local", "local");
+    let saved = crate::launcher::Launcher {
+        mode: crate::launcher::LaunchMode::Omp,
+        profile: "work".into(),
+        command: String::new(),
+    };
+    let mut harness = Harness::with_state(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![])],
+        State {
+            launcher: Some(saved.clone()),
+            ..State::default()
+        },
+    );
+    harness.press(&["n", "shell-only", "down", "down", "up", " ", "tab"]);
+    harness.press(&["down"]);
+    let Some(Command::Create {
+        worker, request, ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected shell creation");
+    };
+    assert!(request.command.is_empty());
+    let created = session("$1", "shell-only");
+    assert!(matches!(
+        harness.picker.update(Message::Created {
+            worker,
+            result: Ok((created.clone(), vec![created])),
+        }),
+        Some(Command::Launch(_))
+    ));
+    assert_eq!(harness.picker.state.launcher, Some(saved));
+    assert!(harness.effects.borrow().states.is_empty());
+}
+
+#[test]
+fn launcher_save_failure_does_not_replay_or_lose_the_created_session() {
+    let computer = worker("local", "local");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    harness.picker.services.update_state = Box::new(|_| Err("read-only fixture".into()));
+    harness.press(&[
+        "n", "first", "down", "down", "down", " ", "tab", "work", "down", " ",
+    ]);
+    harness.press(&["down"]);
+    let Some(Command::Create { worker, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("expected explicit creation");
+    };
+    let created = session("$1", "first");
+    let Some(Command::Launch(choice)) = harness.picker.update(Message::Created {
+        worker,
+        result: Ok((created.clone(), vec![created.clone()])),
+    }) else {
+        panic!("created session must still be opened");
+    };
+    assert_eq!(choice.session, Some(created));
+    assert!(harness.picker.state_error.contains("read-only fixture"));
+    assert_eq!(
+        harness.picker.state.launcher.as_ref().unwrap().mode,
+        crate::launcher::LaunchMode::Omp
+    );
+    assert!(harness.picker.creation_pending.is_none());
+}
+
+#[test]
+fn installed_launchers_reject_stale_replies_and_use_the_selected_computer() {
+    let computer = remote("remote", "remote", "alice@remote");
+    let saved = crate::launcher::Launcher {
+        mode: crate::launcher::LaunchMode::Claude,
+        ..crate::launcher::Launcher::default()
+    };
+    let mut harness = Harness::with_state(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![])],
+        State {
+            launcher: Some(saved),
+            ..State::default()
+        },
+    );
+    let Some(Command::InspectLaunchers {
+        epoch: old_epoch,
+        cancel: old_cancel,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+    else {
+        panic!("expected launcher inspection");
+    };
+    harness.press(&["esc"]);
+    let Some(Command::InspectLaunchers { epoch, worker, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+    else {
+        panic!("expected new launcher inspection");
+    };
+    assert_eq!(worker, computer);
+    assert!(old_cancel.is_cancelled());
+    harness.press(&["new-work"]);
+    harness.picker.update(Message::LaunchersFound {
+        epoch: old_epoch,
+        worker: worker.clone(),
+        result: Ok(crate::launcher::InstalledLaunchers {
+            omp: true,
+            claude: true,
+            codex: true,
+        }),
+    });
+    harness.press(&["up"]);
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none()
+    );
+    harness.picker.update(Message::LaunchersFound {
+        epoch,
+        worker: worker.clone(),
+        result: Ok(crate::launcher::InstalledLaunchers {
+            omp: false,
+            claude: false,
+            codex: true,
+        }),
+    });
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none()
+    );
+    harness.press(&["up", "up", "down", " ", "tab", "down"]);
+    let Some(Command::Create {
+        worker: target,
+        request,
+        ..
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("installed Codex should be selectable");
+    };
+    assert_eq!(target, worker);
+    assert_eq!(request.command, "codex");
+    assert!(harness.effects.borrow().states.is_empty());
+}
+
+#[test]
+fn installed_launcher_lookup_cannot_authorize_a_changed_ssh_identity() {
+    let computer = remote("remote", "remote", "alice@remote");
+    let mut harness = Harness::with_state(
+        vec![computer.clone()],
+        vec![ready(&computer, vec![])],
+        State {
+            launcher: Some(crate::launcher::Launcher {
+                mode: crate::launcher::LaunchMode::Codex,
+                ..crate::launcher::Launcher::default()
+            }),
+            ..State::default()
+        },
+    );
+    let Some(Command::InspectLaunchers { epoch, worker, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+    else {
+        panic!("expected launcher inspection");
+    };
+    harness.press(&["new-work"]);
+    harness.picker.entries[0].worker.destination = Some("bob@remote".into());
+    harness.picker.update(Message::LaunchersFound {
+        epoch,
+        worker,
+        result: Ok(crate::launcher::InstalledLaunchers {
+            omp: true,
+            claude: true,
+            codex: true,
+        }),
+    });
+    harness.press(&["up"]);
+    assert!(
+        harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none()
+    );
+    assert!(harness.picker.creation_pending.is_none());
+    assert!(harness.effects.borrow().states.is_empty());
+}
+
+#[test]
+fn shell_creation_cancels_unneeded_launcher_discovery() {
+    let computer = worker("local", "local");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    let Some(Command::InspectLaunchers {
+        epoch,
+        worker,
+        cancel,
+    }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+    else {
+        panic!("expected launcher inspection");
+    };
+    harness.press(&["shell-work"]);
+    harness.press(&["up"]);
+    let Some(Command::Create { request, .. }) = harness
+        .picker
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+    else {
+        panic!("Shell must not wait for tool discovery");
+    };
+    assert!(request.command.is_empty());
+    assert!(cancel.is_cancelled());
+    assert!(
+        harness
+            .picker
+            .update(Message::LaunchersFound {
+                epoch,
+                worker,
+                result: Err("late connection error".into()),
+            })
+            .is_none()
+    );
+    assert!(harness.picker.creation.as_ref().unwrap().busy);
+    assert!(harness.picker.creation.as_ref().unwrap().error.is_empty());
+}
+
+#[test]
+fn failed_creation_resumes_cancelled_launcher_discovery_in_the_same_form() {
+    use crate::launcher::{InstalledLaunchers, LaunchMode, Launcher};
+
+    for mode in [LaunchMode::Shell, LaunchMode::Custom] {
+        let computer = remote("remote", "remote", "alice@remote");
+        let mut harness = Harness::with_state(
+            vec![computer.clone()],
+            vec![ready(&computer, vec![])],
+            State {
+                launcher: Some(Launcher {
+                    mode,
+                    command: "printf ready".into(),
+                    ..Launcher::default()
+                }),
+                ..State::default()
+            },
+        );
+        let Some(Command::InspectLaunchers {
+            epoch: old_epoch,
+            cancel: old_cancel,
+            ..
+        }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        else {
+            panic!("expected original launcher lookup");
+        };
+        harness.press(&["new-work", "up"]);
+        let Some(Command::Create {
+            worker, request, ..
+        }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("Shell and Custom must not wait for launcher discovery");
+        };
+        assert_eq!(
+            request.command,
+            if mode == LaunchMode::Shell {
+                ""
+            } else {
+                "printf ready"
+            }
+        );
+        assert!(old_cancel.is_cancelled());
+        let now = Instant::now();
+        assert!(harness.picker.update(Message::Tick(now)).is_none());
+        let Some(Command::Discover { generation, .. }) = harness.picker.update(Message::Created {
+            worker: worker.clone(),
+            result: Err((Status::ProbeFailed, "Connection lost".into())),
+        }) else {
+            panic!("uncertain creation must still rescan");
+        };
+        // Old Ready inventory is not enough: discovery and the complete
+        // uncertainty scan must settle before another SSH probe can start.
+        assert!(harness.picker.update(Message::Tick(now)).is_none());
+        assert!(matches!(
+            harness.picker.update(Message::Discovered {
+                generation,
+                result: Ok((vec![computer.clone()], String::new())),
+            }),
+            Some(Command::Scan { .. })
+        ));
+        assert!(harness.picker.update(Message::Tick(now)).is_none());
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: Some(ready(&computer, vec![])),
+        });
+        assert!(harness.picker.update(Message::Tick(now)).is_none());
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: None,
+        });
+        let Some(Command::InspectLaunchers {
+            epoch,
+            worker: target,
+            cancel,
+        }) = harness.picker.update(Message::Tick(now))
+        else {
+            panic!("failed creation must resume discovery in the open form");
+        };
+        assert_eq!(target, computer);
+        assert_ne!(epoch, old_epoch);
+        assert!(harness.picker.update(Message::Tick(now)).is_none());
+        assert!(harness.picker.creation_pending.is_none());
+        assert!(harness.launched().is_empty());
+        // A queued success from the cancelled probe cannot reveal options
+        // or consume the replacement probe's pending slot.
+        harness.picker.update(Message::LaunchersFound {
+            epoch: old_epoch,
+            worker: worker.clone(),
+            result: Ok(InstalledLaunchers {
+                omp: true,
+                claude: true,
+                codex: true,
+            }),
+        });
+        assert!(!harness.rendered(100, 40).contains("Resume OMP"));
+        assert!(!cancel.is_cancelled());
+        harness.picker.update(Message::LaunchersFound {
+            epoch,
+            worker: worker.clone(),
+            result: Ok(InstalledLaunchers {
+                omp: true,
+                claude: false,
+                codex: false,
+            }),
+        });
+        assert!(harness.rendered(100, 40).contains("Resume OMP"));
+        harness.press(&["down", "down", "down"]);
+        if mode == LaunchMode::Shell {
+            harness.press(&["down"]);
+        } else {
+            harness.press(&["up", "up"]);
+        }
+        harness.press(&["enter", "work", "down", "down"]);
+        let Some(Command::Create {
+            worker: target,
+            request,
+            ..
+        }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("OMP must be selectable without cancelling or reopening");
+        };
+        assert_eq!(target, computer);
+        assert_eq!(request.name, "new-work");
+        assert_eq!(request.directory, "~");
+        assert_eq!(request.command, "omp --profile=work");
+        let created = session("$1", "new-work");
+        let next = harness.picker.update(Message::Created {
+            worker,
+            result: Ok((created.clone(), vec![created.clone()])),
+        });
+        harness.drive(next);
+        assert_eq!(harness.launched().len(), 1);
+        assert_eq!(harness.launched()[0].session.as_ref(), Some(&created));
+    }
+}
+
+#[test]
+fn suspended_launcher_discovery_requires_an_unchanged_ready_computer() {
+    for boundary in ["destination", "not-ready", "missing-inventory", "removed"] {
+        let computer = remote("remote", "remote", "alice@remote");
+        let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+        assert!(matches!(
+            harness
+                .picker
+                .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            Some(Command::InspectLaunchers { .. })
+        ));
+        harness.press(&["new-work", "up"]);
+        let Some(Command::Create { worker, .. }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("expected shell creation");
+        };
+        let Some(Command::Discover { generation, .. }) = harness.picker.update(Message::Created {
+            worker,
+            result: Err((Status::ProbeFailed, "Connection lost".into())),
+        }) else {
+            panic!("expected uncertainty rescan");
+        };
+        let current = if boundary == "destination" {
+            remote("remote", "remote", "bob@remote")
+        } else {
+            computer.clone()
+        };
+        let discovered = if boundary == "removed" {
+            vec![]
+        } else {
+            vec![current.clone()]
+        };
+        harness.picker.update(Message::Discovered {
+            generation,
+            result: Ok((discovered, String::new())),
+        });
+        if !matches!(boundary, "missing-inventory" | "removed") {
+            harness.picker.update(Message::Inventory {
+                generation,
+                inventory: Some(if boundary == "not-ready" {
+                    failed(&current, Status::AuthRequired, "Sign in again")
+                } else {
+                    ready(&current, vec![])
+                }),
+            });
+        }
+        harness.picker.update(Message::Inventory {
+            generation,
+            inventory: None,
+        });
+        let now = Instant::now();
+        assert!(
+            harness.picker.update(Message::Tick(now)).is_none(),
+            "{boundary}"
+        );
+        assert!(harness.picker.launcher_lookup_pending.is_none());
+        assert!(!harness.rendered(100, 40).contains("Resume OMP"));
+        harness.press(&["enter"]);
+        assert!(harness.picker.creation_pending.is_none());
+        assert!(harness.launched().is_empty());
+        if matches!(boundary, "not-ready" | "missing-inventory") {
+            harness
+                .picker
+                .update(Message::Checked(ready(&computer, vec![])));
+            assert!(matches!(
+                harness.picker.update(Message::Tick(now)),
+                Some(Command::InspectLaunchers { worker, .. }) if worker == computer
+            ));
+        }
+    }
+}
+
+#[test]
+fn cancelling_suspended_launcher_discovery_does_not_authorize_a_reopened_form() {
+    use crate::launcher::InstalledLaunchers;
+
+    for boundary in ["creation", "rescan", "lookup"] {
+        let computer = remote("remote", "remote", "alice@remote");
+        let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+        let Some(Command::InspectLaunchers {
+            epoch: old_epoch, ..
+        }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        else {
+            panic!("expected original launcher lookup");
+        };
+        harness.press(&["new-work", "up"]);
+        let Some(Command::Create { worker, .. }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        else {
+            panic!("expected shell creation");
+        };
+        if boundary == "creation" {
+            harness.press(&["esc"]);
+        }
+        let next = harness.picker.update(Message::Created {
+            worker: worker.clone(),
+            result: Err((Status::ProbeFailed, "Connection lost".into())),
+        });
+        assert!(matches!(next, Some(Command::Discover { .. })));
+        if boundary == "rescan" {
+            harness.press(&["esc"]);
+        }
+        harness.drive(next);
+        let now = Instant::now();
+        let mut cancelled_epochs = vec![old_epoch];
+        if boundary == "lookup" {
+            let Some(Command::InspectLaunchers { epoch, cancel, .. }) =
+                harness.picker.update(Message::Tick(now))
+            else {
+                panic!("expected resumed launcher lookup");
+            };
+            cancelled_epochs.push(epoch);
+            harness.press(&["esc"]);
+            assert!(cancel.is_cancelled());
+        }
+        assert!(harness.picker.creation.is_none());
+        assert!(harness.picker.update(Message::Tick(now)).is_none());
+        assert!(harness.picker.launcher_lookup_pending.is_none());
+        let Some(Command::InspectLaunchers { epoch, .. }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        else {
+            panic!("reopening must start its own lookup");
+        };
+        for old_epoch in cancelled_epochs {
+            harness.picker.update(Message::LaunchersFound {
+                epoch: old_epoch,
+                worker: worker.clone(),
+                result: Ok(InstalledLaunchers {
+                    omp: true,
+                    claude: true,
+                    codex: true,
+                }),
+            });
+            assert!(!harness.rendered(100, 40).contains("Resume OMP"));
+        }
+        harness.picker.update(Message::LaunchersFound {
+            epoch,
+            worker,
+            result: Ok(InstalledLaunchers {
+                omp: true,
+                claude: false,
+                codex: false,
+            }),
+        });
+        assert!(harness.rendered(100, 40).contains("Resume OMP"));
+        assert!(harness.picker.creation_pending.is_none());
+        assert!(harness.launched().is_empty());
+    }
+}
+
+#[test]
+fn completed_launcher_discovery_failure_is_not_automatically_retried() {
+    use crate::launcher::{InstalledLaunchers, LaunchMode, Launcher};
+
+    for result in [
+        Err("Connection lost".into()),
+        Ok(InstalledLaunchers {
+            omp: false,
+            claude: false,
+            codex: false,
+        }),
+    ] {
+        let computer = worker("local", "local");
+        let mut harness = Harness::with_state(
+            vec![computer.clone()],
+            vec![ready(&computer, vec![])],
+            State {
+                launcher: Some(Launcher {
+                    mode: LaunchMode::Omp,
+                    ..Launcher::default()
+                }),
+                ..State::default()
+            },
+        );
+        let Some(Command::InspectLaunchers { epoch, worker, .. }) = harness
+            .picker
+            .key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
+        else {
+            panic!("expected launcher lookup");
+        };
+        harness.picker.update(Message::LaunchersFound {
+            epoch,
+            worker,
+            result,
+        });
+        harness.press(&["new-work", "up", "enter"]);
+        assert!(harness.picker.creation_pending.is_none());
+        let now = Instant::now();
+        for _ in 0..3 {
+            assert!(harness.picker.update(Message::Tick(now)).is_none());
+        }
+        assert!(harness.picker.launcher_lookup_pending.is_none());
+        assert!(harness.launched().is_empty());
+    }
+}
+
+#[test]
+fn preview_body_clicks_attach_the_selected_session_on_launch() {
+    let _env = crate::test_support::env_read();
+    for (width, height) in [(120, 30), (70, 40)] {
+        let computer = worker("box", "box");
+        let mut harness = Harness::new(
+            vec![computer.clone()],
+            vec![ready(&computer, vec![session("$0", "work")])],
+        );
+        harness.buffer(width, height);
+        assert!(harness.picker.active.is_none());
+        assert!(harness.picker.preview_visible);
+        let preview = harness.picker.terminal_area;
+        let click = wheel(
+            MouseEventKind::Down(event::MouseButton::Left),
+            preview.x,
+            preview.y,
+        );
+        harness.picker.filtering = true;
+        assert!(harness.picker.update(Message::Mouse(click)).is_none());
+        assert!(harness.picker.filtering);
+        harness.picker.filtering = false;
+        let command = harness.picker.update(Message::Mouse(click));
+        harness.drive(command);
+        let launched = harness.launched();
+        assert_eq!(launched.len(), 1);
+        assert_eq!(launched[0].worker.key, "box");
+        assert_eq!(launched[0].session.as_ref().unwrap().id, "$0");
+    }
+}
+
+#[test]
+fn preview_body_clicks_do_not_create_sessions_for_empty_computers() {
+    let _env = crate::test_support::env_read();
+    let computer = worker("box", "box");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    harness.buffer(120, 30);
+    assert!(harness.picker.preview_visible);
+    let preview = harness.picker.terminal_area;
+    assert!(
+        harness
+            .picker
+            .update(Message::Mouse(wheel(
+                MouseEventKind::Down(event::MouseButton::Left),
+                preview.x,
+                preview.y,
+            )))
+            .is_none()
+    );
+    assert!(harness.picker.creation.is_none());
+    assert!(!harness.picker.terminal_focused);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn pane_body_clicks_switch_between_browse_and_connected_terminal() {
+    let _env = crate::test_support::env_read();
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness.picker.selection = Selection::Session {
+        worker: "box".into(),
+        session: "$0".into(),
+        pinned: false,
+    };
+    harness.picker.rebuild();
+    for (width, height) in [(120, 30), (70, 40)] {
+        harness.buffer(width, height);
+        let selected = harness.picker.selection.clone();
+        let browse = harness.picker.list_area;
+        assert!(!browse.is_empty());
+        assert!(
+            harness
+                .picker
+                .update(Message::Mouse(wheel(
+                    MouseEventKind::Down(event::MouseButton::Left),
+                    browse.x,
+                    browse.y,
+                )))
+                .is_none()
+        );
+        assert!(!harness.picker.terminal_focused);
+        assert_eq!(harness.picker.selection, selected);
+        harness.press(&["/"]);
+        assert!(
+            harness.picker.filtering,
+            "keyboard input must now reach Browse"
+        );
+        harness.press(&["esc"]);
+        harness.buffer(width, height);
+        assert!(harness.picker.terminal_visible);
+        let terminal = harness.picker.terminal_area;
+        assert!(
+            harness
+                .picker
+                .update(Message::Mouse(wheel(
+                    MouseEventKind::Down(event::MouseButton::Left),
+                    terminal.x,
+                    terminal.y,
+                )))
+                .is_none()
+        );
+        assert!(harness.picker.terminal_focused);
+        harness.press(&["/"]);
+        assert!(
+            !harness.picker.filtering,
+            "keyboard input must return to the terminal"
+        );
+        assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+        assert!(
+            harness.launched().is_empty(),
+            "focus must not open another session"
+        );
+    }
 }

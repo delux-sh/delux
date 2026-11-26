@@ -456,8 +456,10 @@ impl Picker {
     pub(super) fn footer_line(&self, width: u16) -> Line<'static> {
         let hints: &[(&str, &str)] = if self.creation.is_some() {
             &[
-                ("tab", "next field"),
-                ("enter", "create"),
+                ("tab", "complete dir / next"),
+                ("↑↓", "fields / options"),
+                ("enter", "next / activate"),
+                ("space", "select / toggle"),
                 ("esc", "back"),
                 ("ctrl-u", "clear"),
                 ("ctrl-c/shift-tab", "back"),

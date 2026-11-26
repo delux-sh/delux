@@ -351,6 +351,40 @@ pub fn preview(
     }
 }
 
+/// Complete a directory on the selected computer without prompting or mutation.
+pub fn complete_directory(
+    cancel: &Cancel,
+    worker: &Worker,
+    path: &str,
+) -> Result<crate::directory_completion::DirectoryCompletion, String> {
+    let script = crate::directory_completion::script(path)?;
+    let result = run_computer_command(cancel, worker, &script, Duration::from_secs(5), false)
+        .map_err(|error| error.to_string())?;
+    if result.code != 0 {
+        return Err(failure(result.code, &result.stderr).1);
+    }
+    crate::directory_completion::parse(path, &result.stdout)
+}
+
+/// Discover launchers on the selected computer without executing them or prompting.
+pub fn installed_launchers(
+    cancel: &Cancel,
+    worker: &Worker,
+) -> Result<crate::launcher::InstalledLaunchers, String> {
+    let result = run_computer_command(
+        cancel,
+        worker,
+        crate::launcher::INSTALLED_LAUNCHERS_SCRIPT,
+        Duration::from_secs(5),
+        false,
+    )
+    .map_err(|error| error.to_string())?;
+    if result.code != 0 {
+        return Err(failure(result.code, &result.stderr).1);
+    }
+    crate::launcher::parse_installed_launchers(&result.stdout)
+}
+
 /// Refresh agent status without prompting, within the preview command timeout.
 pub fn agent_status(
     cancel: &Cancel,

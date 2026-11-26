@@ -329,6 +329,42 @@ fn execute_command(
                 }
             });
         }
+        Command::InspectLaunchers {
+            epoch,
+            worker,
+            cancel,
+        } => {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let result = crate::app::installed_launchers(&cancel, &worker);
+                if !cancel.is_cancelled() {
+                    let _ = sender.send(Message::LaunchersFound {
+                        epoch,
+                        worker,
+                        result,
+                    });
+                }
+            });
+        }
+        Command::CompleteDirectory {
+            epoch,
+            worker,
+            path,
+            cancel,
+        } => {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let result = crate::app::complete_directory(&cancel, &worker, &path);
+                if !cancel.is_cancelled() {
+                    let _ = sender.send(Message::DirectoryCompleted {
+                        epoch,
+                        worker,
+                        path,
+                        result,
+                    });
+                }
+            });
+        }
         Command::Create {
             worker,
             request,

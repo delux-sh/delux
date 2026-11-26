@@ -80,7 +80,7 @@ Press `s` in Attention to **Set up reporting**. Delux checks native support and 
 | --- | --- |
 | ↑ / ↓ or `j` / `k` | Move |
 | `enter` | Open a session, sign in, or create on an empty ready computer |
-| `tab` | Focus the connected terminal; open the selected session if none is connected |
+| `tab` | Open the highlighted session, reusing its connection if already attached |
 | `shift-tab` | Return to the list without disconnecting |
 | `1`–`9` | Open the numbered Needs input session (sidebar focus only) |
 | `v` | View all Attention / return to Browse |
@@ -103,7 +103,7 @@ Computers already reported offline start in **Other computers**, before probing 
 
 The machine running Delux appears under its operating-system hostname, with a trailing `.local` suffix omitted. Its CLI/configuration identifier remains `local`, so existing pins and mappings keep working. The plain-text `delux list` heading includes both, for example `laptop — local`; use `local` with `delux attach`.
 
-When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
+When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` or click inside Browse to restore list focus; click inside a connected terminal to type there again. Clicking a session preview attaches to that session, just like Enter or Tab, including right after launch. Clicking Browse only changes focus—it does not select or open another session. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 
 The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab to interact), and **Active** (Shift-Tab for the list). Inactive borders and titles are muted; session output stays readable.
 
@@ -115,7 +115,17 @@ Press `a` in the list to add an SSH destination such as `alice@build-box` or an 
 
 Duplicate checks include saved computers hidden by `ignore` and mappings saved by another running picker; adding never overwrites an existing mapping.
 
-**New session:** press `n`, or Enter on a ready computer with no sessions. Choose a name, a directory (`~`, `~/path`, or an absolute path), and optionally a command such as `omp`, `claude`, or `codex`. Blank starts the normal shell; a command must be installed on that computer and may end the session when it exits. Tab changes fields; Enter creates and attaches; Esc, Ctrl-C, or Shift-Tab cancels. Sign in first if needed.
+**New session:** press `n`, or Enter on a ready computer with no sessions. Choose a name, a directory (`~`, `~/path`, or an absolute path), and **Start**: Shell, OMP, Resume OMP…, Claude, Codex, or Custom command. Delux checks for `omp`, `claude`, and `codex` on the selected computer's command PATH, including over SSH, and shows the installed choices. This checks executable availability, not authentication or account access. Shell and Custom command remain usable during the check. A missing saved launcher stays selected with a warning and cannot be started; choose another launcher explicitly. Lookup failures are shown as errors, not mistaken for missing installations. Reopen New session after changing installations or reconnecting to check again.
+
+If creation interrupts an unfinished tool check and then fails, Delux resumes the check after the rescan finishes and the same computer is ready. This never retries session creation automatically.
+
+**Start** shows the available launchers as indented options, with the selected one marked. Up/Down moves focus without changing the selection; Space selects the focused option. Enter selects it and advances to the next setting. Tab leaves the choices without selecting a different launcher. OMP, Claude and Codex start in the chosen directory; Resume OMP opens OMP's own conversation picker on that computer. An optional OMP profile selects its isolated history and settings; leave it blank to use OMP's normal profile/environment. Custom command can run other installed terminal tools, such as `gemini`.
+
+Select **Use as default** with Space to remember Start and its profile or custom command after successful session creation. The default applies to future sessions on all computers from this Delux client; names and directories are never saved as defaults. One-off changes, cancellation, and failed creation do not replace your saved choice. Shell remains the initial default. The program must be installed and authenticated on the selected computer; when it exits, its tmux session may end. Launching a tool does not install its Attention reporter.
+
+In Directory, **Tab completes paths on the selected computer**—including over SSH—and shows matching directories directly beneath the path, with completion feedback below the matches. Type more to narrow multiple matches, then press Tab again. Feedback distinguishes an existing directory, no matches, and a lookup or connection error. Spaces and special characters are literal; do not shell-escape the path. Lookups happen only when you press Tab. Use Up/Down to move through settings and launcher options; Tab moves to the next setting outside Directory. Enter in a text field or on Use as default advances to the next setting—it never creates a session. When ready, focus **Create session** at the bottom and press Enter or Space to create and attach. Esc, Ctrl-C or Shift-Tab cancels from anywhere. Sign in first if needed.
+
+Long directory matches use their actual wrapped height. When the suggestions exceed the available rows, `… more results` marks the hidden results; type more of the directory name and press Tab to narrow them.
 
 **End session:** with the list focused, press `x`. Check the session and computer in the confirmation: ending a session closes all its windows and panes and can terminate running programs or agents, losing unsaved work. **Cancel** is selected initially; use Tab or an arrow key to select **End session**, then Enter. Esc cancels. Delux verifies the captured session identity before ending it; a replacement is never selected by name. If the connection fails, the operation may already have happened: Delux rescans without automatically retrying. Detach and quit still leave sessions running.
 
@@ -144,7 +154,7 @@ Delux uses the **default tmux server**, not custom `tmux -L` / `-S` servers. Cre
 
 Session ages show when output last changed; explicit agent status separately reports whether an agent is working, waiting, done, or stopped with an error.
 
-The embedded terminal supports keyboard input and mouse-wheel scrolling, but not mouse clicks/dragging, terminal graphics, or advanced keyboard protocols. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
+The embedded terminal supports keyboard input and mouse-wheel scrolling. Clicks focus Delux panes but are not forwarded to terminal applications; dragging, terminal graphics, and advanced keyboard protocols are unsupported. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
 
 ## Configuration
 

@@ -268,6 +268,17 @@ impl Drop for UserInput {
 }
 
 enum Message {
+    LaunchersFound {
+        epoch: u64,
+        worker: Worker,
+        result: Result<crate::launcher::InstalledLaunchers, String>,
+    },
+    DirectoryCompleted {
+        epoch: u64,
+        worker: Worker,
+        path: String,
+        result: Result<crate::directory_completion::DirectoryCompletion, String>,
+    },
     ReportingSetup {
         epoch: u64,
         worker: Worker,
@@ -316,6 +327,17 @@ enum Message {
 }
 
 enum Command {
+    InspectLaunchers {
+        epoch: u64,
+        worker: Worker,
+        cancel: Cancel,
+    },
+    CompleteDirectory {
+        epoch: u64,
+        worker: Worker,
+        path: String,
+        cancel: Cancel,
+    },
     ReportingSetup {
         epoch: u64,
         cancel: Cancel,
@@ -391,6 +413,10 @@ struct Picker {
     input: Option<UserInput>,
     creation: Option<SessionForm>,
     creation_pending: Option<Cancel>,
+    directory_completion_epoch: u64,
+    directory_completion_pending: Option<Cancel>,
+    launcher_lookup_epoch: u64,
+    launcher_lookup_pending: Option<Cancel>,
     ending: Option<EndConfirmation>,
     ending_pending: Option<Cancel>,
     add_input: Option<String>,
@@ -464,6 +490,10 @@ impl Picker {
             input: None,
             creation: None,
             creation_pending: None,
+            directory_completion_epoch: 0,
+            directory_completion_pending: None,
+            launcher_lookup_epoch: 0,
+            launcher_lookup_pending: None,
             ending: None,
             ending_pending: None,
             add_input: None,
@@ -525,6 +555,64 @@ impl Picker {
 
     fn update(&mut self, message: Message) -> Option<Command> {
         match message {
+            Message::LaunchersFound {
+                epoch,
+                worker,
+                result,
+            } => {
+                if epoch != self.launcher_lookup_epoch {
+                    return None;
+                }
+                let pending = self.launcher_lookup_pending.take()?;
+                if pending.is_cancelled() {
+                    return None;
+                }
+                let form = self.creation.as_mut()?;
+                if form.worker.key != worker.key || form.worker.destination != worker.destination {
+                    return None;
+                }
+                let unchanged = self.entries.iter().any(|entry| {
+                    entry.worker.key == worker.key
+                        && entry.worker.destination == worker.destination
+                        && entry.status() == Status::Ready
+                });
+                form.set_available_launchers(if unchanged {
+                    result
+                } else {
+                    Err("Computer changed or is no longer ready. Reopen New session after reconnecting.".into())
+                });
+            }
+            Message::DirectoryCompleted {
+                epoch,
+                worker,
+                path,
+                result,
+            } => {
+                if epoch != self.directory_completion_epoch {
+                    return None;
+                }
+                let pending = self.directory_completion_pending.take()?;
+                if pending.is_cancelled() {
+                    return None;
+                }
+                let form = self.creation.as_mut()?;
+                if form.worker.key != worker.key || form.worker.destination != worker.destination {
+                    return None;
+                }
+                let unchanged = self.entries.iter().any(|entry| {
+                    entry.worker.key == worker.key
+                        && entry.worker.destination == worker.destination
+                        && entry.status() == Status::Ready
+                });
+                form.complete_directory(
+                    &path,
+                    if unchanged {
+                        result
+                    } else {
+                        Err("Computer changed or is no longer ready. Check the connection and try again.".into())
+                    },
+                );
+            }
             Message::ReportingSetup {
                 epoch,
                 worker,
@@ -809,7 +897,13 @@ impl Picker {
                             },
                             false,
                         );
-                        self.creation = None;
+                        let launcher = self
+                            .creation
+                            .take()
+                            .and_then(|form| form.launcher_to_save());
+                        if let Some(launcher) = launcher {
+                            self.persist_state(StateChange::SetLauncher(&launcher));
+                        }
                         self.show_session(&worker.key, &session.id);
                         self.notice.clear();
                         return Some(Command::Launch(Choice {
@@ -976,15 +1070,47 @@ impl Picker {
         self.rebuild();
     }
 
-    /// Advances the preview, and on ticks where the preview needs nothing,
-    /// starts a due status refresh. A tick carries one command, and the
-    /// selection's preview must never wait behind a background refresh.
+    /// Advances the preview, resumes suspended launcher discovery, then starts
+    /// a due status refresh. Each tick carries one command.
     fn tick(&mut self, now: Instant) -> Option<Command> {
         self.clock = Some(now);
         self.static_seed = self.static_seed.wrapping_add(1);
         let refreshed = *self.status_refreshed.get_or_insert(now);
         self.preview_tick(now)
+            .or_else(|| self.launcher_lookup_tick())
             .or_else(|| self.status_tick(now, refreshed))
+    }
+
+    fn launcher_lookup_tick(&mut self) -> Option<Command> {
+        // Submission cancels the probe because its timeout can reset the SSH
+        // connection used for creation. Resume only after creation and its
+        // mandatory uncertainty rescan have settled.
+        if self.quit
+            || self.scanning
+            || self.creation_pending.is_some()
+            || self.launcher_lookup_pending.is_some()
+        {
+            return None;
+        }
+        let form = self.creation.as_ref()?;
+        if !form.needs_launcher_lookup()
+            || !self.entries.iter().any(|entry| {
+                entry.worker.key == form.worker.key
+                    && entry.worker.destination == form.worker.destination
+                    && entry.status() == Status::Ready
+            })
+        {
+            return None;
+        }
+        let worker = form.worker.clone();
+        self.launcher_lookup_epoch = self.launcher_lookup_epoch.wrapping_add(1);
+        let cancel = self.cancel.child();
+        self.launcher_lookup_pending = Some(cancel.clone());
+        Some(Command::InspectLaunchers {
+            epoch: self.launcher_lookup_epoch,
+            worker,
+            cancel,
+        })
     }
 
     fn status_tick(&mut self, now: Instant, refreshed: Instant) -> Option<Command> {
@@ -1112,7 +1238,7 @@ impl Picker {
             }
             Err(error) => {
                 self.state.apply(change);
-                self.state_error = format!("Could not save pins: {error}");
+                self.state_error = format!("Could not save picker preferences: {error}");
             }
         }
     }
@@ -1370,7 +1496,7 @@ impl Picker {
         match entry.status() {
             Status::Scanning => self.notice = format!("Still probing {name}…"),
             Status::Ready => {
-                self.start_creation();
+                return self.start_creation();
             }
             _ if worker.destination.is_some() => {
                 if self
