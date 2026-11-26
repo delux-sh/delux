@@ -80,7 +80,7 @@ Press `s` in Attention to **Set up reporting**. Delux checks native support and 
 | --- | --- |
 | ↑ / ↓ or `j` / `k` | Move |
 | `enter` | Open a session, sign in, or create on an empty ready computer |
-| `tab` | Focus the connected terminal; open the selected session if none is connected |
+| `tab` | Open the highlighted session, reusing its connection if already attached |
 | `shift-tab` | Return to the list without disconnecting |
 | `1`–`9` | Open the numbered Needs input session (sidebar focus only) |
 | `v` | View all Attention / return to Browse |

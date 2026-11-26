@@ -891,7 +891,7 @@ fn terminal_focus_keeps_shortcuts_and_paste_out_of_the_picker() {
 }
 
 #[test]
-fn directional_focus_preserves_client_and_active_identity_while_browsing() {
+fn tab_opens_highlighted_session_and_reuses_its_existing_connection() {
     let mut harness = terminal_harness(&["/bin/cat"]);
     let back = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
     assert!(harness.picker.key(back).is_none());
@@ -911,9 +911,13 @@ fn directional_focus_preserves_client_and_active_identity_while_browsing() {
         ),
         terminal_columns,
     );
-    harness.press(&["esc"]);
-    harness.press(&["down", "tab"]);
+    harness.press(&["esc", "up"]);
+    harness.press(&["tab"]);
     assert!(harness.picker.terminal_focused);
+    assert!(harness.launched().is_empty());
+    assert!(harness.picker.key(back).is_none());
+    harness.press(&["down"]);
+    assert!(!harness.picker.terminal_focused);
     assert_eq!(harness.picker.selected_session().unwrap().1.id, "$1");
     assert_eq!(
         harness
@@ -928,16 +932,7 @@ fn directional_focus_preserves_client_and_active_identity_while_browsing() {
         "$0"
     );
     assert!(harness.launched().is_empty());
-    assert!(harness.picker.key(back).is_none());
-    harness.press(&["1", "2", "tab"]);
-    assert!(harness.picker.terminal_focused);
-    assert!(harness.launched().is_empty());
-    assert!(harness.picker.key(back).is_none());
-    harness.press(&["up", "enter"]);
-    assert!(harness.launched().is_empty());
-    assert!(harness.picker.terminal_focused);
-    assert!(harness.picker.key(back).is_none());
-    harness.press(&["down", "enter"]);
+    harness.press(&["tab"]);
     let launched = harness.launched();
     assert_eq!(launched.len(), 1);
     assert_eq!(launched[0].session.as_ref().unwrap().id, "$1");
@@ -1048,17 +1043,18 @@ fn browsing_previews_other_sessions_without_disconnect() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    harness.press(&["tab"]);
+    harness.press(&["up", "tab"]);
     let view = harness.rendered(120, 30);
     assert!(view.contains("BACKGROUND_OUTPUT"), "{view}");
     assert!(!view.contains("output of other on box"), "{view}");
     assert!(harness.picker.terminal_visible);
     assert!(!harness.picker.preview_visible);
     assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
-    assert_eq!(harness.picker.selected_session().unwrap().1.id, "$1");
+    assert_eq!(harness.picker.selected_session().unwrap().1.id, "$0");
     assert!(harness.launched().is_empty());
 
     harness.picker.key(back);
+    harness.press(&["down"]);
     let view = harness.rendered(120, 30);
     assert!(view.contains("output of other on box"), "{view}");
     harness.press(&["up"]);

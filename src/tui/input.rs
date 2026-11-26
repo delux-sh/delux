@@ -141,13 +141,13 @@ impl Picker {
             KeyCode::Home | KeyCode::Char('g') => self.move_cursor(-(self.rows.len() as isize)),
             KeyCode::End | KeyCode::Char('G') => self.move_cursor(self.rows.len() as isize),
             KeyCode::Tab => {
-                if self.active.is_some() {
-                    self.terminal_focused = true;
-                } else if self
+                if self
                     .current_row()
                     .is_some_and(|row| self.session(row).is_some())
                 {
                     return self.activate();
+                } else if self.active.is_some() {
+                    self.terminal_focused = true;
                 }
             }
             KeyCode::Char('v') => self.switch_view(),

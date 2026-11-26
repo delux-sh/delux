@@ -246,11 +246,13 @@ Real-PTY/loopback OpenSSH checks verified a User supplied by Include and Match f
 
 ## Browsing previews while connected
 
-The right panel now follows list selection while retaining the connected PTY in the background. Selecting its own session shows the live terminal; selecting another row shows that row's preview. Tab returns to the connected terminal, while Enter opens the selected session.
+The right panel follows list selection while retaining the connected PTY in the background. Selecting its own session shows the live terminal; selecting another row shows that row's preview. Tab and Enter open the highlighted session, reusing the connected client when it matches. With a non-session row highlighted, Tab still focuses the connected terminal.
 
 All 42 picker tests passed, including a regression covering preview delivery with an active client, hidden PTY output draining, and switching back without reconnecting. Formatting, Clippy with warnings denied, and the native macOS ARM64 release build passed.
 
 An isolated real-PTY run with two local tmux sessions verified selection-driven previews, periodic preview refresh, background output, Tab restoring the exact original client, and Enter attaching the selected session. Browsing did not replace the connected client; quitting preserved both sessions. Fixture processes and files were removed. Remote SSH switching was not separately exercised.
+
+The Tab behavior above supersedes the original connected-terminal shortcut verified in that run. The picker regressions cover opening a different highlighted session and returning to the selected connected session without reconnecting.
 
 ## Mouse-wheel forwarding
 
