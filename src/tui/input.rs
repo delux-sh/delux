@@ -433,6 +433,30 @@ impl Picker {
             self.switch_view();
             return None;
         }
+        if event.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.input.is_none()
+            && self.creation.is_none()
+            && self.ending.is_none()
+            && self.add_input.is_none()
+            && !self.filtering
+        {
+            let position = (event.column, event.row).into();
+            if self.terminal_visible && self.terminal_area.contains(position) {
+                self.terminal_focused = true;
+                return None;
+            }
+            if self.preview_visible
+                && self.terminal_area.contains(position)
+                && self
+                    .current_row()
+                    .is_some_and(|row| self.session(row).is_some())
+            {
+                return self.activate();
+            }
+            if self.list_area.contains(position) {
+                self.terminal_focused = false;
+            }
+        }
         if let Some(event) = self.terminal_mouse_event(event) {
             let active = self.active.as_mut()?;
             match active.terminal.scroll(event) {

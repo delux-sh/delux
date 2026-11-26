@@ -5365,3 +5365,118 @@ fn completed_launcher_discovery_failure_is_not_automatically_retried() {
         assert!(harness.launched().is_empty());
     }
 }
+
+#[test]
+fn preview_body_clicks_attach_the_selected_session_on_launch() {
+    let _env = crate::test_support::env_read();
+    for (width, height) in [(120, 30), (70, 40)] {
+        let computer = worker("box", "box");
+        let mut harness = Harness::new(
+            vec![computer.clone()],
+            vec![ready(&computer, vec![session("$0", "work")])],
+        );
+        harness.buffer(width, height);
+        assert!(harness.picker.active.is_none());
+        assert!(harness.picker.preview_visible);
+        let preview = harness.picker.terminal_area;
+        let click = wheel(
+            MouseEventKind::Down(event::MouseButton::Left),
+            preview.x,
+            preview.y,
+        );
+        harness.picker.filtering = true;
+        assert!(harness.picker.update(Message::Mouse(click)).is_none());
+        assert!(harness.picker.filtering);
+        harness.picker.filtering = false;
+        let command = harness.picker.update(Message::Mouse(click));
+        harness.drive(command);
+        let launched = harness.launched();
+        assert_eq!(launched.len(), 1);
+        assert_eq!(launched[0].worker.key, "box");
+        assert_eq!(launched[0].session.as_ref().unwrap().id, "$0");
+    }
+}
+
+#[test]
+fn preview_body_clicks_do_not_create_sessions_for_empty_computers() {
+    let _env = crate::test_support::env_read();
+    let computer = worker("box", "box");
+    let mut harness = Harness::new(vec![computer.clone()], vec![ready(&computer, vec![])]);
+    harness.buffer(120, 30);
+    assert!(harness.picker.preview_visible);
+    let preview = harness.picker.terminal_area;
+    assert!(
+        harness
+            .picker
+            .update(Message::Mouse(wheel(
+                MouseEventKind::Down(event::MouseButton::Left),
+                preview.x,
+                preview.y,
+            )))
+            .is_none()
+    );
+    assert!(harness.picker.creation.is_none());
+    assert!(!harness.picker.terminal_focused);
+    assert!(harness.launched().is_empty());
+}
+
+#[test]
+fn pane_body_clicks_switch_between_browse_and_connected_terminal() {
+    let _env = crate::test_support::env_read();
+    let mut harness = terminal_harness(&["/bin/cat"]);
+    let started = harness.picker.active.as_ref().unwrap().started;
+    harness.picker.selection = Selection::Session {
+        worker: "box".into(),
+        session: "$0".into(),
+        pinned: false,
+    };
+    harness.picker.rebuild();
+    for (width, height) in [(120, 30), (70, 40)] {
+        harness.buffer(width, height);
+        let selected = harness.picker.selection.clone();
+        let browse = harness.picker.list_area;
+        assert!(!browse.is_empty());
+        assert!(
+            harness
+                .picker
+                .update(Message::Mouse(wheel(
+                    MouseEventKind::Down(event::MouseButton::Left),
+                    browse.x,
+                    browse.y,
+                )))
+                .is_none()
+        );
+        assert!(!harness.picker.terminal_focused);
+        assert_eq!(harness.picker.selection, selected);
+        harness.press(&["/"]);
+        assert!(
+            harness.picker.filtering,
+            "keyboard input must now reach Browse"
+        );
+        harness.press(&["esc"]);
+        harness.buffer(width, height);
+        assert!(harness.picker.terminal_visible);
+        let terminal = harness.picker.terminal_area;
+        assert!(
+            harness
+                .picker
+                .update(Message::Mouse(wheel(
+                    MouseEventKind::Down(event::MouseButton::Left),
+                    terminal.x,
+                    terminal.y,
+                )))
+                .is_none()
+        );
+        assert!(harness.picker.terminal_focused);
+        harness.press(&["/"]);
+        assert!(
+            !harness.picker.filtering,
+            "keyboard input must return to the terminal"
+        );
+        assert_eq!(harness.picker.active.as_ref().unwrap().started, started);
+        assert!(
+            harness.launched().is_empty(),
+            "focus must not open another session"
+        );
+    }
+}

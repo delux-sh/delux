@@ -103,7 +103,7 @@ Computers already reported offline start in **Other computers**, before probing 
 
 The machine running Delux appears under its operating-system hostname, with a trailing `.local` suffix omitted. Its CLI/configuration identifier remains `local`, so existing pins and mappings keep working. The plain-text `delux list` heading includes both, for example `laptop — local`; use `local` with `delux attach`.
 
-When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` to restore list focus. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
+When the terminal has focus, the sidebar turns gray and typing goes to the session. Use `shift-tab` or click inside Browse to restore list focus; click inside a connected terminal to type there again. Clicking a session preview attaches to that session, just like Enter or Tab, including right after launch. Clicking Browse only changes focus—it does not select or open another session. Browsing other rows previews them without disconnecting the open session. Detach with your tmux prefix followed by `d` (usually Ctrl-B, then `d`). Detaching or quitting Delux leaves sessions running.
 
 The panel title distinguishes **Preview** (Enter to attach), **Connected** (Tab to interact), and **Active** (Shift-Tab for the list). Inactive borders and titles are muted; session output stays readable.
 
@@ -154,7 +154,7 @@ Delux uses the **default tmux server**, not custom `tmux -L` / `-S` servers. Cre
 
 Session ages show when output last changed; explicit agent status separately reports whether an agent is working, waiting, done, or stopped with an error.
 
-The embedded terminal supports keyboard input and mouse-wheel scrolling, but not mouse clicks/dragging, terminal graphics, or advanced keyboard protocols. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
+The embedded terminal supports keyboard input and mouse-wheel scrolling. Clicks focus Delux panes but are not forwarded to terminal applications; dragging, terminal graphics, and advanced keyboard protocols are unsupported. Use `delux attach` when you need your terminal's full behavior. Inside the same local tmux server, selecting a session switches your current client instead of nesting it.
 
 ## Configuration
 

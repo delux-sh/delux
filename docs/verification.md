@@ -1,5 +1,13 @@
 # Verification record
 
+## Click to attach from the startup preview
+
+Clicking a session preview now uses the normal activation path, including before the first attachment. Empty-computer previews do not start session creation, and filters retain input ownership. Five targeted tests passed: startup preview clicks in wide/stacked layouts, empty-computer clicks, Browse/terminal focus, agent/shell focus, and non-attaching preview wheel guidance. Changed-file Rust 2024 formatting passed; the initial repository-wide formatting check encountered unrelated edits in `src/embedded.rs`, which were left untouched. The release build passed. In a fresh private 120×30 tmux fixture, clicking the preview without first pressing Enter or Tab attached to `local-work`; `pwd` ran there, and subsequent Browse/terminal clicks switched focus. Private fixture processes and files were removed.
+
+## Mouse pane focus
+
+Clicking inside Browse now restores keyboard focus without changing the selection or opening another session. The new regression covers Browse-to-terminal round trips at 120×30 and 70×40; it and the existing agent/shell click-target regression passed. Formatting passed and the release binary was rebuilt. In a private 120×30 tmux fixture, a Browse click changed the footer to list focused and `/` opened the filter; clicking the connected terminal restored terminal focus and `pwd` ran in the same session. Fixture processes and files were removed.
+
 ## Create action separation
 
 Added a blank row between the settings and Create session; the spacer collapses with labels when only one form row fits. The 33 form tests passed after removing a hint-wording assertion, formatting passed, and the release binary was rebuilt. Inspected the running picker at 80×24 and 40×6: the gap is visible and the focused Create action remains accessible. Private fixture processes and files were removed.
